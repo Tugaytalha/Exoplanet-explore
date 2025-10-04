@@ -6,12 +6,16 @@ import warnings
 
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import joblib
 import json
 import os
+import io
+import base64
+from datetime import datetime
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
@@ -53,6 +57,186 @@ def connect_to_mongodb():
 
 # Try to connect to MongoDB at startup
 mongo_connected = connect_to_mongodb()
+
+# ---------- Lightcurve Helper Functions ----------
+LETTER_MAP = {1:"b", 2:"c", 3:"d", 4:"e", 5:"f", 6:"g", 7:"h", 8:"i"}
+
+def _planet_letter(row, rank_within_system=None):
+    """Determine planet letter (b, c, d, ...) from row data."""
+    # Prefer explicit "Kepler-11 f" style names
+    name = row.get("kepler_name")
+    if isinstance(name, str) and len(name.split()) >= 2:
+        last = name.split()[-1].strip()
+        if last.isalpha() and len(last) == 1:
+            return last.lower()
+    # Next, use TCE number if present
+    tce_num = row.get("koi_tce_plnt_num")
+    if pd.notna(tce_num):
+        return LETTER_MAP.get(int(tce_num))
+    # Fallback: order by period within system
+    if rank_within_system is not None:
+        return LETTER_MAP.get(rank_within_system + 1)
+    return "?"
+
+def _decimate(x: np.ndarray, y: np.ndarray, max_points: int = 5000):
+    """Uniformly thin arrays to <= max_points (for payload size)."""
+    n = len(x)
+    if n <= max_points:
+        return x.tolist(), y.tolist()
+    idx = np.linspace(0, n - 1, max_points).astype(int)
+    return x[idx].tolist(), y[idx].tolist()
+
+def _compute_centers(t0: float, period: float, t_min: float, t_max: float):
+    """Compute transit centers within time range."""
+    if not (np.isfinite(t0) and np.isfinite(period) and period > 0):
+        return []
+    k_min = int(np.floor((t_min - t0)/period)) - 1
+    k_max = int(np.ceil((t_max - t0)/period)) + 1
+    centers = t0 + period * np.arange(k_min, k_max + 1)
+    centers = centers[(centers >= t_min) & (centers <= t_max)]
+    return centers.tolist()
+
+def _synthetic_lightcurve(system_df: pd.DataFrame,
+                          days_window: float = 200.0,
+                          cadence_min: float = 30.0,
+                          noise_ppm: float = 400.0):
+    """
+    Build a synthetic Kepler-like light curve in BKJD using KOI columns only.
+    Returns time (BKJD), flux (normalized), and per-planet centers.
+    """
+    if system_df.empty:
+        return [], [], [], (0.0, 0.0)
+
+    # Time grid (BKJD)
+    t0s = system_df["koi_time0bk"].dropna().values
+    t_start = float(np.nanmin(t0s)) if len(t0s) else 0.0
+    t_end = t_start + float(days_window)
+    dt = float(cadence_min) / (60.0 * 24.0)  # minutes -> days
+    t = np.arange(t_start, t_end, dt)
+
+    # Baseline ~ 1 with Gaussian noise
+    rng = np.random.default_rng(42)
+    flux = 1.0 + rng.normal(0.0, noise_ppm/1e6, size=t.size)
+
+    # Sort for consistent labeling
+    sys_sorted = system_df.sort_values("koi_period")
+
+    # Inject simple Gaussian dips at predicted centers
+    planets = []
+    for rank, (_, row) in enumerate(sys_sorted.iterrows()):
+        P = row.get("koi_period")
+        T0 = row.get("koi_time0bk")
+        dur_hr = row.get("koi_duration")
+        depth_ppm = row.get("koi_depth")
+        if not (pd.notna(P) and pd.notna(T0) and pd.notna(dur_hr) and pd.notna(depth_ppm)):
+            continue
+
+        depth = float(depth_ppm) / 1e6
+        sigma = (float(dur_hr) / 24.0) / 6.0  # soft width
+
+        centers = np.array(_compute_centers(T0, P, t_start, t_end))
+        for tc in centers:
+            x = (t - tc) / sigma
+            flux -= depth * np.exp(-0.5 * x * x)
+
+        letter = _planet_letter(row, rank_within_system=rank)
+        planets.append({
+            "name": row.get("kepler_name") or row.get("kepoi_name"),
+            "letter": letter,
+            "koi_name": row.get("kepoi_name"),
+            "period": float(P),
+            "t0_bkjd": float(T0),
+            "duration_hr": float(dur_hr),
+            "depth_ppm": float(depth_ppm),
+            "centers": centers.tolist(),
+        })
+
+    return t, flux, planets, (t_start, t_end)
+
+def _real_lightcurve_or_none(kepid: int):
+    """
+    Try to fetch real Kepler LC (BKJD) via lightkurve. Return (time, flux) or (None, None).
+    """
+    try:
+        from lightkurve import search_lightcurve
+        srch = search_lightcurve(f"KIC {kepid}", mission="Kepler")
+        lcs = srch.download_all()
+        if lcs is None or len(lcs) == 0:
+            return None, None
+        lc = lcs.stitch().remove_nans().normalize()
+        return lc.time.value, lc.flux.value  # BKJD, normalized
+    except Exception:
+        return None, None
+
+def build_lightcurve_payload(kepid: int,
+                             system_df: pd.DataFrame,
+                             mode: str = "synthetic",
+                             days_window: float = 200.0,
+                             cadence_min: float = 30.0,
+                             noise_ppm: float = 400.0,
+                             max_points: int = 5000):
+    """
+    Returns a dict ready to JSON: { time, flux, time_system, normalized, mode, meta, planets }
+    """
+    mode = (mode or "synthetic").lower()
+    if mode == "real":
+        t, f = _real_lightcurve_or_none(kepid)
+        if t is not None and f is not None:
+            t = np.asarray(t); f = np.asarray(f)
+            t_min, t_max = float(np.min(t)), float(np.max(t))
+            # Planet markers from KOI
+            planets = []
+            sys_sorted = system_df.sort_values("koi_period")
+            for rank, (_, row) in enumerate(sys_sorted.iterrows()):
+                P = row.get("koi_period"); T0 = row.get("koi_time0bk")
+                if not (pd.notna(P) and pd.notna(T0)): 
+                    continue
+                letter = _planet_letter(row, rank_within_system=rank)
+                planets.append({
+                    "name": row.get("kepler_name") or row.get("kepoi_name"),
+                    "letter": letter,
+                    "koi_name": row.get("kepoi_name"),
+                    "period": float(P), "t0_bkjd": float(T0),
+                    "duration_hr": float(row.get("koi_duration")) if pd.notna(row.get("koi_duration")) else None,
+                    "depth_ppm": float(row.get("koi_depth")) if pd.notna(row.get("koi_depth")) else None,
+                    "centers": _compute_centers(float(T0), float(P), t_min, t_max),
+                })
+            # decimate
+            tx, fx = _decimate(t, f, max_points=max_points)
+            payload = {
+                "kepid": int(kepid),
+                "time": tx,
+                "flux": fx,
+                "time_system": "BKJD",      # BJD - 2454833
+                "normalized": True,
+                "mode": "real",
+                "meta": {"t_min": t_min, "t_max": t_max, "max_points": max_points},
+                "planets": planets
+            }
+            return payload
+        # fall through to synthetic if real failed
+
+    # synthetic
+    t, f, planets, (t_min, t_max) = _synthetic_lightcurve(
+        system_df, days_window=days_window, cadence_min=cadence_min, noise_ppm=noise_ppm
+    )
+    t = np.asarray(t); f = np.asarray(f)
+    tx, fx = _decimate(t, f, max_points=max_points)
+    return {
+        "kepid": int(kepid),
+        "time": tx,
+        "flux": fx,
+        "time_system": "BKJD",     # matches koi_time0bk
+        "normalized": True,
+        "mode": "synthetic",
+        "meta": {
+            "t_min": float(t_min), "t_max": float(t_max),
+            "cadence_min": float(cadence_min),
+            "noise_ppm": float(noise_ppm),
+            "max_points": int(max_points)
+        },
+        "planets": planets
+    }
 
 # ---------- load & prepare the table once at startup ----------
 def load_data_from_mongodb():
@@ -784,6 +968,11 @@ def root():
         "endpoints": {
             "/planets": "List all KOIs with ML predictions",
             "/planets/{kepid}": "Get specific KOI by Kepler ID",
+            "/planets/{kepid}/lightcurve": "Get light curve data for plotting (synthetic or real)",
+            "/api/features": "Get list of required features for prediction",
+            "/api/predict": "Predict disposition from feature values (POST)",
+            "/api/train": "Train custom model with uploaded data (POST)",
+            "/api/download/{filename}": "Download trained model files",
             "/model/status": "Get model status and information",
             "/stats": "Get dataset statistics and model accuracy"
         }
@@ -973,6 +1162,83 @@ def get_planet(
     return result[0]
 
 
+@app.get("/planets/{kepid}/lightcurve", summary="Light curve data for plotting (JSON)")
+def get_lightcurve_data(
+    kepid: int = FastAPIPath(..., description="Kepler ID"),
+    mode: str = Query("synthetic", pattern="^(synthetic|real)$",
+                      description="synthetic (fast, local) or real (requires lightkurve)"),
+    days_window: float = Query(200.0, ge=1.0, le=2000.0,
+                               description="Synthetic only: window length in days"),
+    cadence_min: float = Query(30.0, ge=1.0, le=60.0,
+                               description="Synthetic only: sampling cadence in minutes"),
+    noise_ppm: float = Query(400.0, ge=0.0, le=2000.0,
+                             description="Synthetic only: white noise level (ppm)"),
+    max_points: int = Query(5000, ge=100, le=200_000,
+                            description="Decimate to <= this many points")
+):
+    """
+    Get light curve data for plotting. Returns time series data with transit markers.
+    
+    **Mode: synthetic**
+    - Fast, generated locally from KOI parameters
+    - Simulates Kepler-like light curve with Gaussian transits
+    - Configurable window, cadence, and noise
+    
+    **Mode: real**
+    - Fetches actual Kepler data via lightkurve (requires internet)
+    - Falls back to synthetic if unavailable
+    - Transit markers from KOI parameters
+    
+    **Returns:**
+    ```json
+    {
+      "kepid": 10797460,
+      "time": [136.5, 136.52, ...],  // BKJD (days)
+      "flux": [1.0001, 0.9998, ...],  // normalized
+      "time_system": "BKJD",
+      "normalized": true,
+      "mode": "synthetic",
+      "meta": {...},
+      "planets": [
+        {
+          "name": "Kepler-227 b",
+          "letter": "b",
+          "koi_name": "K00752.01",
+          "period": 15.85567,
+          "t0_bkjd": 136.5127,
+          "duration_hr": 2.8933,
+          "depth_ppm": 944.0,
+          "centers": [136.5, 152.3, ...]  // transit times
+        }
+      ]
+    }
+    ```
+    
+    **Example:**
+    ```bash
+    # Synthetic light curve
+    curl "http://localhost:8000/planets/10797460/lightcurve"
+    
+    # Real Kepler data
+    curl "http://localhost:8000/planets/10797460/lightcurve?mode=real"
+    
+    # Custom synthetic parameters
+    curl "http://localhost:8000/planets/10797460/lightcurve?days_window=500&cadence_min=15&noise_ppm=200"
+    ```
+    """
+    # Get system subset (all KOIs for this kepid)
+    sys_df = df[df["kepid"] == kepid]
+    if sys_df.empty:
+        raise HTTPException(status_code=404, detail=f"kepid {kepid} not found")
+
+    payload = build_lightcurve_payload(
+        kepid, sys_df, mode=mode,
+        days_window=days_window, cadence_min=cadence_min,
+        noise_ppm=noise_ppm, max_points=max_points
+    )
+    return payload
+
+
 @app.get("/model/status", response_model=ModelStatus)
 def model_status():
     """
@@ -987,6 +1253,419 @@ def model_status():
         "features_count": len(feature_names) if feature_names else None,
         "classes": list(label_encoder.classes_) if label_encoder else None,
     }
+
+
+@app.get("/api/features")
+def get_required_features():
+    """
+    Get the list of features required for prediction.
+    
+    **Returns:**
+    - List of all feature names
+    - Count of features
+    - Model status
+    """
+    
+    if not model_loaded or not feature_names:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. Feature list not available."
+        )
+    
+    return {
+        "features": feature_names,
+        "count": len(feature_names),
+        "model_loaded": model_loaded,
+        "classes": list(label_encoder.classes_) if label_encoder else None
+    }
+
+
+@app.post("/api/predict")
+def predict_disposition(features: dict):
+    """
+    Predict KOI disposition from input features.
+    
+    **Parameters:**
+    - **features**: Dictionary of feature values (must match training feature names)
+    
+    **Returns:**
+    - Predicted disposition class
+    - Probability distribution across all classes
+    - Confidence score
+    
+    **Example request body:**
+    ```json
+    {
+        "koi_period": 15.85567,
+        "koi_duration": 2.8933,
+        "koi_depth": 944.0,
+        "koi_prad": 2.89,
+        "st_teff": 5455,
+        "st_rad": 0.927,
+        ...
+    }
+    ```
+    """
+    
+    if not model_loaded or trained_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. Cannot make predictions."
+        )
+    
+    if not feature_names:
+        raise HTTPException(
+            status_code=503,
+            detail="Feature names not available."
+        )
+    
+    try:
+        # Create feature vector in correct order
+        feature_vector = []
+        missing_features = []
+        
+        for feature_name in feature_names:
+            if feature_name in features:
+                value = features[feature_name]
+                # Handle None/null values
+                if value is None or (isinstance(value, float) and np.isnan(value)):
+                    feature_vector.append(0.0)  # Will be imputed
+                else:
+                    feature_vector.append(float(value))
+            else:
+                # Feature not provided - will be imputed
+                feature_vector.append(0.0)
+                missing_features.append(feature_name)
+        
+        # Convert to numpy array and reshape
+        X = np.array(feature_vector).reshape(1, -1)
+        
+        # Impute missing values using the same strategy as training
+        if imputer is not None:
+            X = imputer.transform(X)
+        
+        # Scale features
+        X_scaled = scaler.transform(X)
+        
+        # Make prediction
+        prediction = trained_model.predict(X_scaled)[0]
+        probabilities = trained_model.predict_proba(X_scaled)[0]
+        
+        # Decode prediction
+        predicted_label = label_encoder.inverse_transform([prediction])[0]
+        
+        # Get confidence (max probability)
+        confidence = float(probabilities.max())
+        
+        # Build probability distribution
+        prob_distribution = {}
+        for i, class_name in enumerate(label_encoder.classes_):
+            prob_distribution[class_name] = float(probabilities[i])
+        
+        # Map to is_exoplanet
+        is_exoplanet = None
+        if predicted_label == "CONFIRMED":
+            is_exoplanet = True
+        elif predicted_label == "FALSE POSITIVE":
+            is_exoplanet = False
+        
+        return {
+            "disposition": predicted_label,
+            "is_exoplanet": is_exoplanet,
+            "confidence": confidence,
+            "probabilities": prob_distribution,
+            "features_provided": len(features),
+            "features_required": len(feature_names),
+            "features_missing": len(missing_features),
+            "missing_features_sample": missing_features[:10] if missing_features else []
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error making prediction: {str(e)}"
+        )
+
+
+@app.post("/api/train")
+async def train_custom_model(
+    training_file: UploadFile = File(..., description="CSV file with training data"),
+    use_existing_data: bool = Form(default=True, description="Combine with existing data (True) or use only uploaded data (False)"),
+    model_name: str = Form(default="custom_model", description="Name for the trained model")
+):
+    """
+    Train a new XGBoost model with custom data.
+    
+    **Parameters:**
+    - **training_file**: CSV file with training data (must include 'koi_disposition' column)
+    - **use_existing_data**: If True, combines uploaded data with existing dataset. If False, uses only uploaded data.
+    - **model_name**: Custom name for the trained model
+    
+    **Returns:**
+    - Training metrics (accuracy, precision, recall, F1-score)
+    - Cross-validation scores
+    - Feature importance (top 20)
+    - Confusion matrix
+    - Model file path for download
+    - Visualization plots (base64 encoded)
+    
+    **Example:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/train" \\
+      -F "training_file=@my_data.csv" \\
+      -F "use_existing_data=true" \\
+      -F "model_name=my_custom_model"
+    ```
+    """
+    
+    try:
+        # Read uploaded file
+        contents = await training_file.read()
+        user_df = pd.read_csv(io.BytesIO(contents))
+        
+        print(f"\n{'='*70}")
+        print(f"CUSTOM MODEL TRAINING: {model_name}")
+        print(f"{'='*70}")
+        print(f"📤 Uploaded data: {len(user_df)} rows, {len(user_df.columns)} columns")
+        
+        # Validate required column
+        if 'koi_disposition' not in user_df.columns:
+            raise HTTPException(
+                status_code=400,
+                detail="Training data must include 'koi_disposition' column"
+            )
+        
+        # Combine with existing data if requested
+        if use_existing_data:
+            print(f"📊 Combining with existing data ({len(df)} rows)...")
+            training_df = pd.concat([df, user_df], ignore_index=True)
+            print(f"✅ Combined dataset: {len(training_df)} rows")
+        else:
+            print(f"📊 Using only uploaded data...")
+            training_df = user_df.copy()
+        
+        # Import training classes
+        from train_koi_disposition import KOIDispositionPredictor
+        from sklearn.metrics import classification_report, confusion_matrix
+        import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Configure training
+        config = {
+            'data_path': None,  # We're passing data directly
+            'target_column': 'koi_disposition',
+            'output_dir': 'model_outputs',
+            'test_size': 0.2,
+            'val_size': 0.1,
+            'random_state': 42,
+            'model_name': f'xgboost_{model_name}',
+        }
+        
+        # Initialize predictor
+        predictor = KOIDispositionPredictor(config)
+        
+        # Set the data directly
+        predictor.df = training_df
+        
+        # Run preprocessing
+        print("\n📋 Preprocessing data...")
+        X, y = predictor.preprocess_data()
+        
+        # Split data
+        from sklearn.model_selection import train_test_split
+        X_temp, X_test, y_temp, y_test = train_test_split(
+            X, y, test_size=config['test_size'], 
+            random_state=config['random_state'], stratify=y
+        )
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_temp, y_temp, 
+            test_size=config['val_size']/(1-config['test_size']),
+            random_state=config['random_state'], stratify=y_temp
+        )
+        
+        print(f"✅ Split: Train={len(X_train)}, Val={len(X_val)}, Test={len(X_test)}")
+        
+        # Feature engineering
+        print("\n🔧 Feature engineering...")
+        X_train_scaled, X_val_scaled, X_test_scaled = predictor.prepare_features(
+            X_train, X_val, X_test
+        )
+        
+        # Train model
+        print("\n🚀 Training model...")
+        y_val_encoded = predictor.train_model(X_train_scaled, y_train, X_val_scaled, y_val)
+        
+        # Cross-validation
+        print("\n📊 Cross-validation...")
+        cv_results = predictor.cross_validate_model(X, y)
+        
+        # Evaluate on test set
+        print("\n📈 Evaluating on test set...")
+        y_test_encoded = predictor.label_encoder.transform(y_test)
+        y_pred = predictor.model.predict(X_test_scaled)
+        y_pred_proba = predictor.model.predict_proba(X_test_scaled)
+        
+        # Calculate metrics
+        from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+        test_accuracy = accuracy_score(y_test_encoded, y_pred)
+        precision, recall, f1, support = precision_recall_fscore_support(
+            y_test_encoded, y_pred, average='weighted'
+        )
+        
+        # Classification report
+        report = classification_report(
+            y_test_encoded, y_pred,
+            target_names=predictor.label_encoder.classes_,
+            output_dict=True
+        )
+        
+        # Confusion matrix
+        cm = confusion_matrix(y_test_encoded, y_pred)
+        
+        # Feature importance
+        feature_importance_df = predictor.get_feature_importance()
+        top_features = feature_importance_df.head(20).to_dict('records')
+        
+        # Generate plots
+        print("\n📊 Generating visualizations...")
+        
+        # Create figure with subplots
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        
+        # 1. Confusion Matrix
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                   xticklabels=predictor.label_encoder.classes_,
+                   yticklabels=predictor.label_encoder.classes_,
+                   ax=axes[0, 0])
+        axes[0, 0].set_title('Confusion Matrix')
+        axes[0, 0].set_ylabel('True Label')
+        axes[0, 0].set_xlabel('Predicted Label')
+        
+        # 2. Feature Importance
+        top_20_features = feature_importance_df.head(20)
+        axes[0, 1].barh(range(len(top_20_features)), top_20_features['importance'])
+        axes[0, 1].set_yticks(range(len(top_20_features)))
+        axes[0, 1].set_yticklabels(top_20_features['feature'])
+        axes[0, 1].invert_yaxis()
+        axes[0, 1].set_xlabel('Importance')
+        axes[0, 1].set_title('Top 20 Feature Importance')
+        
+        # 3. Class Distribution
+        class_counts = pd.Series(y).value_counts()
+        axes[1, 0].bar(class_counts.index, class_counts.values)
+        axes[1, 0].set_title('Training Data Class Distribution')
+        axes[1, 0].set_xlabel('Class')
+        axes[1, 0].set_ylabel('Count')
+        axes[1, 0].tick_params(axis='x', rotation=45)
+        
+        # 4. Cross-Validation Scores
+        cv_scores = cv_results['fold_scores']
+        axes[1, 1].plot(range(1, len(cv_scores) + 1), cv_scores, marker='o')
+        axes[1, 1].axhline(y=cv_results['mean_score'], color='r', linestyle='--', 
+                          label=f"Mean: {cv_results['mean_score']:.4f}")
+        axes[1, 1].set_xlabel('Fold')
+        axes[1, 1].set_ylabel('Accuracy')
+        axes[1, 1].set_title('Cross-Validation Scores')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save plot to base64
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        plot_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close()
+        
+        # Save model
+        print("\n💾 Saving model...")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        saved_paths = predictor.save_artifacts(timestamp)
+        
+        # Model download path
+        model_filename = saved_paths['model'].split('/')[-1]
+        
+        print(f"\n{'='*70}")
+        print(f"✅ TRAINING COMPLETE")
+        print(f"{'='*70}")
+        print(f"Test Accuracy: {test_accuracy:.4f}")
+        print(f"CV Mean: {cv_results['mean_score']:.4f}")
+        
+        return {
+            "status": "success",
+            "model_name": model_name,
+            "timestamp": timestamp,
+            "data_info": {
+                "total_samples": len(training_df),
+                "training_samples": len(X_train),
+                "validation_samples": len(X_val),
+                "test_samples": len(X_test),
+                "features_used": len(predictor.feature_names),
+                "classes": list(predictor.label_encoder.classes_),
+                "used_existing_data": use_existing_data
+            },
+            "metrics": {
+                "test_accuracy": float(test_accuracy),
+                "test_precision": float(precision),
+                "test_recall": float(recall),
+                "test_f1": float(f1),
+                "cv_mean": float(cv_results['mean_score']),
+                "cv_std": float(cv_results['std_score']),
+                "cv_scores": [float(s) for s in cv_results['fold_scores']]
+            },
+            "classification_report": report,
+            "confusion_matrix": cm.tolist(),
+            "feature_importance": top_features,
+            "model_files": {
+                "model": model_filename,
+                "download_url": f"/api/download/{model_filename}",
+                "scaler": saved_paths['scaler'].split('/')[-1],
+                "label_encoder": saved_paths['label_encoder'].split('/')[-1],
+                "feature_names": saved_paths['feature_names'].split('/')[-1]
+            },
+            "visualization": {
+                "plot_base64": plot_base64,
+                "description": "Base64 encoded PNG image with 4 plots: confusion matrix, feature importance, class distribution, CV scores"
+            }
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error training model: {str(e)}"
+        )
+
+
+@app.get("/api/download/{filename}")
+def download_model_file(filename: str):
+    """
+    Download trained model files.
+    
+    **Parameters:**
+    - **filename**: Name of the file to download
+    
+    **Returns:**
+    - File download
+    """
+    
+    file_path = MODEL_DIR / filename
+    
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"File {filename} not found"
+        )
+    
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type='application/octet-stream'
+    )
 
 
 @app.get("/stats", response_model=dict)
