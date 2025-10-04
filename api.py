@@ -55,22 +55,78 @@ def connect_to_mongodb():
 mongo_connected = connect_to_mongodb()
 
 # ---------- load & prepare the table once at startup ----------
+def load_data_from_mongodb():
+    """Load data from MongoDB if available and populated."""
+    if not mongo_connected or mongo_collection is None:
+        return None
+    
+    try:
+        # Check if MongoDB has data
+        doc_count = mongo_collection.count_documents({})
+        
+        if doc_count == 0:
+            print("📊 MongoDB is empty, will load from CSV")
+            return None
+        
+        print(f"📊 Loading {doc_count} documents from MongoDB...")
+        
+        # Load all documents from MongoDB (excluding _id)
+        # Load in batches for better memory efficiency with large datasets
+        batch_size = 10000
+        documents = []
+        
+        cursor = mongo_collection.find({}, {'_id': 0})
+        batch = []
+        for doc in cursor:
+            batch.append(doc)
+            if len(batch) >= batch_size:
+                documents.extend(batch)
+                batch = []
+                if len(documents) % 50000 == 0:
+                    print(f"   Loaded {len(documents)} documents...")
+        
+        # Add remaining documents
+        if batch:
+            documents.extend(batch)
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(documents)
+        
+        print(f"✅ Loaded {len(df)} rows from MongoDB")
+        return df
+        
+    except Exception as e:
+        print(f"⚠️  Error loading from MongoDB: {e}")
+        return None
+
+# Try to load from MongoDB first
+print("\n" + "="*70)
+print("DATA LOADING")
+print("="*70)
+
+df = load_data_from_mongodb()
+
+# If MongoDB doesn't have data, load from CSV
+if df is None:
+    print("📊 Loading data from CSV...")
+    
 if not DATA_PATH.exists():
     raise FileNotFoundError(
         f"{DATA_PATH} not found – run fetch.py first to create it."
     )
 
 df = pd.read_csv(DATA_PATH)
-
-# Check if required column exists
-if "koi_disposition" not in df.columns:
-    print(f"⚠️  WARNING: 'koi_disposition' column not found in data file!")
-    print(f"   Available columns: {list(df.columns[:10])}...")
-    print(f"   Please run fetch.py to regenerate the data file.")
-    raise ValueError(
-        "Data file is missing 'koi_disposition' column. "
-        "Run 'python fetch.py' to fetch data with all required columns."
-    )
+    print(f"✅ Loaded {len(df)} rows from CSV")
+    
+    # Check if required column exists
+    if "koi_disposition" not in df.columns:
+        print(f"⚠️  WARNING: 'koi_disposition' column not found in data file!")
+        print(f"   Available columns: {list(df.columns[:10])}...")
+        print(f"   Please run fetch.py to regenerate the data file.")
+        raise ValueError(
+            "Data file is missing 'koi_disposition' column. "
+            "Run 'python fetch.py' to fetch data with all required columns."
+        )
 
 # Map dispositions to simplified categories
 def map_disposition(disp):
@@ -87,9 +143,39 @@ def map_disposition(disp):
     else:
         return None, "UNKNOWN"
 
-# Store actual disposition for reference
-df["actual_disposition"] = df["koi_disposition"].apply(lambda x: map_disposition(x)[1])
-df["actual_is_exoplanet"] = df["koi_disposition"].apply(lambda x: map_disposition(x)[0])
+# Check if data already has predictions (loaded from MongoDB with predictions)
+data_has_predictions = (
+    'disposition' in df.columns and 
+    'disposition_source' in df.columns and 
+    'prediction_confidence' in df.columns and
+    df['disposition_source'].notna().any()
+)
+
+print("\n" + "="*70)
+print("DATA PREPARATION")
+print("="*70)
+
+if data_has_predictions:
+    print("✅ Data already contains predictions (loaded from MongoDB)")
+    print(f"   Source: {df['disposition_source'].iloc[0] if len(df) > 0 else 'unknown'}")
+    print(f"   Predicted CONFIRMED: {(df['disposition'] == 'CONFIRMED').sum()}")
+    print(f"   Predicted FALSE POSITIVE: {(df['disposition'] == 'FALSE POSITIVE').sum()}")
+    print(f"   Predicted CANDIDATE: {(df['disposition'] == 'CANDIDATE').sum()}")
+    
+    # Ensure actual disposition columns exist for comparison
+    if 'actual_disposition' not in df.columns and 'koi_disposition' in df.columns:
+        df["actual_disposition"] = df["koi_disposition"].apply(lambda x: map_disposition(x)[1])
+    if 'actual_is_exoplanet' not in df.columns and 'koi_disposition' in df.columns:
+        df["actual_is_exoplanet"] = df["koi_disposition"].apply(lambda x: map_disposition(x)[0])
+else:
+    # Fresh data from CSV - need to create actual disposition columns
+    if 'koi_disposition' in df.columns:
+        df["actual_disposition"] = df["koi_disposition"].apply(lambda x: map_disposition(x)[1])
+        df["actual_is_exoplanet"] = df["koi_disposition"].apply(lambda x: map_disposition(x)[0])
+        print("📊 Prepared actual disposition columns from CSV data")
+        print(f"   Dataset CONFIRMED: {(df['actual_disposition'] == 'CONFIRMED').sum()}")
+        print(f"   Dataset FALSE_POSITIVE: {(df['actual_disposition'] == 'FALSE_POSITIVE').sum()}")
+        print(f"   Dataset CANDIDATE: {(df['actual_disposition'] == 'CANDIDATE').sum()}")
 
 # ---------- Load trained model (if available) ----------
 trained_model = None
@@ -152,6 +238,11 @@ model_loaded = load_latest_model()
 def predict_all_dispositions():
     """Run model predictions on all KOIs and add to dataframe."""
     global df
+    
+    # Check if predictions already exist
+    if data_has_predictions:
+        print("⏭️  Skipping predictions - data already contains model predictions")
+        return
     
     if not model_loaded or trained_model is None:
         print("⚠️  Model not loaded. Using actual dispositions as fallback.")
@@ -240,60 +331,130 @@ def predict_all_dispositions():
 # Run predictions at startup
 predict_all_dispositions()
 
-# ---------- Write predictions to MongoDB ----------
-def populate_mongodb():
-    """Write all predicted data to MongoDB."""
+# ---------- Update MongoDB with predictions ----------
+def update_mongodb_predictions():
+    """Update MongoDB with prediction results only."""
     if not mongo_connected or mongo_collection is None:
-        print("⚠️  MongoDB not connected. Skipping data population.")
+        print("⚠️  MongoDB not connected. Skipping MongoDB update.")
         return False
     
-    print("📤 Writing data to MongoDB...")
+    # Check if MongoDB already has predictions
+    try:
+        existing_count = mongo_collection.count_documents({})
+        if existing_count > 0 and data_has_predictions:
+            print(f"✅ MongoDB already contains {existing_count} documents with predictions")
+            return True
+    except:
+        pass
+    
+    # Check if we have predictions to write
+    if not data_has_predictions and 'disposition' not in df.columns:
+        print("⚠️  No predictions to write to MongoDB")
+        return False
     
     try:
-        # Convert DataFrame to list of dicts
-        records = df.to_dict('records')
+        existing_count = mongo_collection.count_documents({})
         
-        # Clean up records (convert NaN to None, handle numpy types)
-        cleaned_records = []
-        for record in records:
-            cleaned_record = {}
-            for key, value in record.items():
-                # Convert numpy types to Python types
-                if pd.isna(value):
-                    cleaned_record[key] = None
-                elif isinstance(value, (np.integer, np.floating)):
-                    cleaned_record[key] = value.item()
-                elif isinstance(value, np.bool_):
-                    cleaned_record[key] = bool(value)
-                else:
-                    cleaned_record[key] = value
-            cleaned_records.append(cleaned_record)
-        
-        # Drop existing collection and recreate
-        mongo_collection.drop()
-        print(f"   Inserting {len(cleaned_records)} documents...")
-        
-        # Insert in batches for better performance
-        batch_size = 1000
-        for i in range(0, len(cleaned_records), batch_size):
-            batch = cleaned_records[i:i + batch_size]
-            mongo_collection.insert_many(batch, ordered=False)
-        
-        # Create index on kepid for fast lookups
-        mongo_collection.create_index('kepid', unique=True)
-        mongo_collection.create_index('disposition')
-        mongo_collection.create_index('is_exoplanet')
-        
-        print(f"✅ Successfully wrote {len(cleaned_records)} documents to MongoDB")
-        print(f"   Created indexes on: kepid, disposition, is_exoplanet")
-        return True
+        if existing_count == 0:
+            # MongoDB is empty, need to insert all data
+            print("📤 MongoDB is empty - inserting all data with predictions...")
+            
+            # Convert DataFrame to list of dicts
+            records = df.to_dict('records')
+            
+            # Clean up records (convert NaN to None, handle numpy types)
+            cleaned_records = []
+            for record in records:
+                cleaned_record = {}
+                for key, value in record.items():
+                    if pd.isna(value):
+                        cleaned_record[key] = None
+                    elif isinstance(value, (np.integer, np.floating)):
+                        cleaned_record[key] = value.item()
+                    elif isinstance(value, np.bool_):
+                        cleaned_record[key] = bool(value)
+                    else:
+                        cleaned_record[key] = value
+                cleaned_records.append(cleaned_record)
+            
+            # Insert in batches
+            batch_size = 1000
+            for i in range(0, len(cleaned_records), batch_size):
+                batch = cleaned_records[i:i + batch_size]
+                mongo_collection.insert_many(batch, ordered=False)
+                if (i + batch_size) % 10000 == 0:
+                    print(f"   Inserted {i + batch_size} documents...")
+            
+            # Create indexes
+            mongo_collection.create_index('kepid', unique=True)
+            mongo_collection.create_index('disposition')
+            mongo_collection.create_index('is_exoplanet')
+            
+            print(f"✅ Successfully inserted {len(cleaned_records)} documents to MongoDB")
+            print(f"   Created indexes on: kepid, disposition, is_exoplanet")
+            return True
+        else:
+            # MongoDB has data, update only prediction fields
+            print(f"📤 Updating {len(df)} documents with predictions in MongoDB...")
+            
+            # Prediction fields to update
+            prediction_fields = [
+                'disposition', 'disposition_source', 'prediction_confidence', 
+                'is_exoplanet'
+            ]
+            
+            # Add probability columns if they exist
+            if model_loaded and label_encoder is not None:
+                for class_name in label_encoder.classes_:
+                    prob_col = f"prob_{class_name}"
+                    if prob_col in df.columns:
+                        prediction_fields.append(prob_col)
+            
+            # Update in batches
+            update_count = 0
+            batch_size = 1000
+            
+            for i in range(0, len(df), batch_size):
+                batch_df = df.iloc[i:i + batch_size]
+                
+                for _, row in batch_df.iterrows():
+                    kepid = int(row['kepid'])
+                    
+                    # Build update document
+                    update_doc = {}
+                    for field in prediction_fields:
+                        if field in row.index:
+                            value = row[field]
+                            if pd.isna(value):
+                                update_doc[field] = None
+                            elif isinstance(value, (np.integer, np.floating)):
+                                update_doc[field] = value.item()
+                            elif isinstance(value, np.bool_):
+                                update_doc[field] = bool(value)
+                            else:
+                                update_doc[field] = value
+                    
+                    # Update MongoDB document
+                    mongo_collection.update_one(
+                        {'kepid': kepid},
+                        {'$set': update_doc}
+                    )
+                    update_count += 1
+                
+                if (i + batch_size) % 10000 == 0:
+                    print(f"   Updated {i + batch_size} documents...")
+            
+            print(f"✅ Successfully updated {update_count} documents in MongoDB with predictions")
+            return True
         
     except Exception as e:
-        print(f"❌ Error writing to MongoDB: {e}")
+        print(f"❌ Error updating MongoDB: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
-# Populate MongoDB with predicted data
-mongodb_populated = populate_mongodb()
+# Update MongoDB with predictions
+mongodb_populated = update_mongodb_predictions()
 
 # Optimize DataFrame for faster queries (fallback if MongoDB fails)
 if not mongodb_populated:
