@@ -110,12 +110,12 @@ df = load_data_from_mongodb()
 if df is None:
     print("📊 Loading data from CSV...")
             
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(
-            f"{DATA_PATH} not found – run fetch.py first to create it."
-        )
+if not DATA_PATH.exists():
+    raise FileNotFoundError(
+        f"{DATA_PATH} not found – run fetch.py first to create it."
+    )
 
-    df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
@@ -662,13 +662,17 @@ def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, inclu
         'host', 'hd_name', 'hip_name',
         # Coordinate transforms
         'glon', 'glat', 'elon', 'elat', 'ra_str', 'dec_str', 'rastr', 'decstr',
-        # Extra stellar fields
+        # Unwanted st_* stellar fields (keep only st_teff, st_rad, st_mass)
+        'st_met', 'st_meterr1', 'st_meterr2',
+        'st_logg', 'st_loggerr1', 'st_loggerr2',
+        'st_age', 'st_ageerr1', 'st_ageerr2',
+        'st_lum', 'st_lumerr1', 'st_lumerr2',
+        'st_dens', 'st_denserr1', 'st_denserr2',
+        'st_radv', 'st_radverr1', 'st_radverr2',
+        'st_vsin', 'st_vsinerr1', 'st_vsinerr2',
+        'st_rotp', 'st_rotperr1', 'st_rotperr2',
+        # Unwanted sy_* fields (keep only sy_gaiamag, sy_tmag, sy_dist, sy_plx)
         'sy_icmag', 'sy_icmagerr1', 'sy_icmagerr2',
-        # Proper motion/astrometric
-        'sy_pm', 'sy_pmerr1', 'sy_pmerr2',
-        'sy_pmra', 'sy_pmraerr1', 'sy_pmraerr2',
-        'sy_pmdec', 'sy_pmdecerr1', 'sy_pmdecerr2',
-        # Extra magnitudes
         'sy_bmag', 'sy_bmagerr1', 'sy_bmagerr2',
         'sy_vmag', 'sy_vmagerr1', 'sy_vmagerr2',
         'sy_umag', 'sy_umagerr1', 'sy_umagerr2',
@@ -682,6 +686,15 @@ def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, inclu
         'sy_w2mag', 'sy_w2magerr1', 'sy_w2magerr2',
         'sy_w3mag', 'sy_w3magerr1', 'sy_w3magerr2',
         'sy_w4mag', 'sy_w4magerr1', 'sy_w4magerr2',
+        # Proper motion/astrometric (not wanted)
+        'sy_pm', 'sy_pmerr1', 'sy_pmerr2',
+        'sy_pmra', 'sy_pmraerr1', 'sy_pmraerr2',
+        'sy_pmdec', 'sy_pmdecerr1', 'sy_pmdecerr2',
+        # Other sy_* fields not wanted
+        'sy_kepmag', 'sy_kepmagerr1', 'sy_kepmagerr2',
+        'sy_pnum',
+        # Additional unwanted fields
+        'kepoi_id',
     ]
     
     # Combine wanted columns
@@ -882,7 +895,7 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-        rows = subset.iloc[skip : skip + limit]
+    rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
