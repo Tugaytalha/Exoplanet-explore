@@ -110,13 +110,13 @@ df = load_data_from_mongodb()
 if df is None:
     print("📊 Loading data from CSV...")
             
-if not DATA_PATH.exists():
-    raise FileNotFoundError(
-        f"{DATA_PATH} not found – run fetch.py first to create it."
-    )
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"{DATA_PATH} not found – run fetch.py first to create it."
+        )
 
-df = pd.read_csv(DATA_PATH)
-    print(f"✅ Loaded {len(df)} rows from CSV")
+    df = pd.read_csv(DATA_PATH)
+        print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
     if "koi_disposition" not in df.columns:
@@ -895,7 +895,7 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-    rows = subset.iloc[skip : skip + limit]
+        rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
