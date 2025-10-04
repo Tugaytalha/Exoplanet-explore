@@ -110,12 +110,12 @@ df = load_data_from_mongodb()
 if df is None:
     print("📊 Loading data from CSV...")
         
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(
-            f"{DATA_PATH} not found – run fetch.py first to create it."
-        )
+if not DATA_PATH.exists():
+    raise FileNotFoundError(
+        f"{DATA_PATH} not found – run fetch.py first to create it."
+    )
 
-    df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
@@ -622,27 +622,78 @@ def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, inclu
         'is_exoplanet',
     ]
     
-    # Photometry - Fotometri
+    # Photometry - Fotometri (minimal set only)
     photometry_columns = [
         'koi_kepmag', 'koi_kepmag_err',
         'sy_gaiamag', 'sy_gaiamagerr1',
         'sy_tmag', 'sy_tmagerr1',
     ]
     
-    # 3D/Sky position - 3D/sky
+    # 3D/Sky position - 3D/sky (minimal set only)
     sky_columns = [
         'sy_dist', 'sy_disterr1', 'sy_disterr2',
         'sy_plx', 'sy_plxerr1', 'sy_plxerr2',
         'x_pc', 'y_pc', 'z_pc', 'dist_ly',
     ]
     
-    # Combine all columns
+    # Explicitly exclude these columns (metadata and unwanted fields)
+    excluded_columns = [
+        # Vetting/delivery metadata
+        'koi_delivname', 'koi_vet_stat', 'koi_quarters',
+        # Diagnostic/TCE statistics
+        'koi_count', 'koi_max_sngle_ev', 'koi_max_mult_ev', 'koi_bin_oedp_sig',
+        # Limb darkening
+        'koi_limbdark_mod', 'koi_ldm_coeff1', 'koi_ldm_coeff2', 'koi_ldm_coeff3', 'koi_ldm_coeff4',
+        # Model fitting metadata
+        'koi_trans_mod', 'koi_model_dof', 'koi_model_chisq',
+        # Orbital parameters not listed
+        'koi_eccen', 'koi_eccen_err1', 'koi_eccen_err2',
+        'koi_longp', 'koi_longp_err1', 'koi_longp_err2',
+        # Alternate epoch fields
+        'koi_time0', 'koi_time0_err1', 'koi_time0_err2',
+        # Ingress duration
+        'koi_ingress', 'koi_ingress_err1', 'koi_ingress_err2',
+        # Inclination
+        'koi_incl', 'koi_incl_err1', 'koi_incl_err2',
+        # Provenance/commentary
+        'koi_sparprov', 'koi_comment', 'koi_vet_date', 'koi_tce_plnt_num',
+        'koi_tce_delivname', 'koi_disp_prov', 'koi_parm_prov',
+        # Extra identifiers
+        'host', 'hd_name', 'hip_name',
+        # Coordinate transforms
+        'glon', 'glat', 'elon', 'elat', 'ra_str', 'dec_str', 'rastr', 'decstr',
+        # Extra stellar fields
+        'sy_icmag', 'sy_icmagerr1', 'sy_icmagerr2',
+        # Proper motion/astrometric
+        'sy_pm', 'sy_pmerr1', 'sy_pmerr2',
+        'sy_pmra', 'sy_pmraerr1', 'sy_pmraerr2',
+        'sy_pmdec', 'sy_pmdecerr1', 'sy_pmdecerr2',
+        # Extra magnitudes
+        'sy_bmag', 'sy_bmagerr1', 'sy_bmagerr2',
+        'sy_vmag', 'sy_vmagerr1', 'sy_vmagerr2',
+        'sy_umag', 'sy_umagerr1', 'sy_umagerr2',
+        'sy_rmag', 'sy_rmagerr1', 'sy_rmagerr2',
+        'sy_imag', 'sy_imagerr1', 'sy_imagerr2',
+        'sy_zmag', 'sy_zmagerr1', 'sy_zmagerr2',
+        'sy_jmag', 'sy_jmagerr1', 'sy_jmagerr2',
+        'sy_hmag', 'sy_hmagerr1', 'sy_hmagerr2',
+        'sy_kmag', 'sy_kmagerr1', 'sy_kmagerr2',
+        'sy_w1mag', 'sy_w1magerr1', 'sy_w1magerr2',
+        'sy_w2mag', 'sy_w2magerr1', 'sy_w2magerr2',
+        'sy_w3mag', 'sy_w3magerr1', 'sy_w3magerr2',
+        'sy_w4mag', 'sy_w4magerr1', 'sy_w4magerr2',
+    ]
+    
+    # Combine wanted columns
     all_columns = (base_columns + transit_columns + stellar_columns + 
                    derived_columns + disposition_columns + 
                    photometry_columns + sky_columns)
     
-    # Build column list dynamically based on what's available
-    columns_to_include = [col for col in all_columns if col in df_subset.columns]
+    # Build column list: include only wanted columns that exist and aren't excluded
+    columns_to_include = [
+        col for col in all_columns 
+        if col in df_subset.columns and col not in excluded_columns
+    ]
     
     if include_actual and 'actual_disposition' in df_subset.columns:
         if 'actual_disposition' not in columns_to_include:
@@ -831,7 +882,7 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-        rows = subset.iloc[skip : skip + limit]
+    rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
