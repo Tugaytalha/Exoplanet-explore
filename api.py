@@ -7,11 +7,30 @@ import warnings
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import ORJSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 import joblib
 import json
 
 warnings.filterwarnings('ignore')
+
+# Try to import orjson for faster JSON serialization
+try:
+    import orjson
+    USE_ORJSON = True
+except ImportError:
+    USE_ORJSON = False
+    print("⚠️  orjson not available, using standard JSON (slower)")
+
+# Try to import Polars for faster DataFrame operations
+try:
+    import polars as pl
+    USE_POLARS = True
+    print("✅ Using Polars for ultra-fast DataFrame operations")
+except ImportError:
+    USE_POLARS = False
+    print("⚠️  Polars not available, using pandas (slower). Install with: pip install polars")
 
 DATA_PATH = Path("data/koi_with_relative_location.csv")
 MODEL_DIR = Path("model_outputs")
@@ -22,7 +41,45 @@ if not DATA_PATH.exists():
         f"{DATA_PATH} not found – run fetch.py first to create it."
     )
 
-df = pd.read_csv(DATA_PATH)
+# Load data with Polars (faster) or Pandas (fallback)
+if USE_POLARS:
+    print("📊 Loading data with Polars...")
+    try:
+        # Specify problematic columns as strings to avoid parsing errors
+        # koi_quarters contains binary strings like "11111111111111111000000000000000"
+        schema_overrides = {
+            'koi_quarters': pl.Utf8,  # Treat as string
+            'koi_limbdark_mod': pl.Utf8,  # Might be text
+            'koi_trans_mod': pl.Utf8,  # Might be text
+            'koi_sparprov': pl.Utf8,  # Might be text
+            'koi_fittype': pl.Utf8,  # Might be text
+            'koi_comment': pl.Utf8,  # Text
+            'ra_str': pl.Utf8,  # Text
+            'dec_str': pl.Utf8,  # Text
+            'rastr': pl.Utf8,  # Text
+            'decstr': pl.Utf8,  # Text
+        }
+        
+        df_polars = pl.read_csv(
+            DATA_PATH,
+            infer_schema_length=10000,  # Infer schema from more rows
+            schema_overrides=schema_overrides,  # Force string types for problematic columns
+            ignore_errors=False
+        )
+        # Convert to pandas for compatibility with existing model code
+        df = df_polars.to_pandas()
+        print(f"✅ Data loaded with Polars: {len(df)} rows, {len(df.columns)} columns")
+        print(f"   Memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+    except Exception as e:
+        print(f"⚠️  Polars failed: {str(e)[:200]}")
+        print("   Falling back to Pandas...")
+        USE_POLARS = False
+        df = pd.read_csv(DATA_PATH)
+        print(f"✅ Data loaded with Pandas: {len(df)} rows")
+else:
+    print("📊 Loading data with Pandas...")
+    df = pd.read_csv(DATA_PATH)
+    print(f"✅ Data loaded with Pandas: {len(df)} rows")
 
 # Check if required column exists
 if "koi_disposition" not in df.columns:
@@ -183,6 +240,30 @@ def predict_all_dispositions():
 # Run predictions at startup
 predict_all_dispositions()
 
+# Optimize DataFrame for faster queries
+print("🔧 Optimizing DataFrame for queries...")
+
+# 1. Convert string columns to categorical for memory efficiency
+categorical_columns = ['disposition', 'disposition_source', 'actual_disposition', 
+                       'kepoi_name', 'kepler_name']
+for col in categorical_columns:
+    if col in df.columns and df[col].dtype == 'object':
+        df[col] = df[col].astype('category')
+
+# 2. Downcast numeric columns to save memory
+float_cols = df.select_dtypes(include=['float64']).columns
+for col in float_cols:
+    df[col] = pd.to_numeric(df[col], downcast='float')
+
+# 3. Set kepid as index for O(1) lookups
+df.set_index('kepid', drop=False, inplace=True)
+
+# 4. Report memory usage
+memory_usage_mb = df.memory_usage(deep=True).sum() / 1024**2
+print(f"✅ DataFrame optimized! Memory usage: {memory_usage_mb:.2f} MB")
+print(f"   - Categorical columns: {len(categorical_columns)}")
+print(f"   - Indexed by kepid for fast lookups")
+
 # -------- Response Models --------
 class PlanetInfo(BaseModel):
     kepid: int
@@ -210,42 +291,63 @@ app = FastAPI(
     title="Kepler KOI Exoplanet Classification API",
     description="Serves Kepler Objects of Interest with real disposition data "
                 "and optional ML model predictions using XGBoost classifier.",
-    version="2.0.0",
+    version="3.0.0",
+    default_response_class=ORJSONResponse if USE_ORJSON else None,  # Use faster JSON serialization
 )
 
-# helper – remap a dataframe row to the JSON we want to expose
-def row_to_dict(row: pd.Series, include_actual: bool = False, include_probabilities: bool = False) -> dict:
-    """Convert DataFrame row to API response dictionary."""
+# Add GZip compression middleware for responses > 1KB
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+print("✅ FastAPI optimizations enabled:")
+if USE_ORJSON:
+    print("   - orjson: Fast JSON serialization")
+print("   - gzip: Response compression for data > 1KB")
+
+# helper – convert dataframe to list of dictionaries efficiently
+def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, include_probabilities: bool = False) -> list:
+    """Convert DataFrame to list of API response dictionaries using vectorized operations."""
     
-    result = {
-        "kepid": int(row.kepid),
-        "kepoi_name": row.kepoi_name if pd.notna(row.kepoi_name) else None,
-        "kepler_name": row.kepler_name if pd.notna(row.kepler_name) else None,
-        "x_pc": None if pd.isna(row.x_pc) else float(row.x_pc),
-        "y_pc": None if pd.isna(row.y_pc) else float(row.y_pc),
-        "z_pc": None if pd.isna(row.z_pc) else float(row.z_pc),
-        "dist_ly": None if pd.isna(row.dist_ly) else float(row.dist_ly),
-        "is_exoplanet": None if pd.isna(row.is_exoplanet) else bool(row.is_exoplanet),
-        "disposition": row.disposition,
-        "disposition_source": row.disposition_source,
-        "confidence": None if pd.isna(row.prediction_confidence) else float(row.prediction_confidence),
-    }
+    # Select base columns
+    base_columns = [
+        'kepid', 'kepoi_name', 'kepler_name', 'x_pc', 'y_pc', 'z_pc', 
+        'dist_ly', 'is_exoplanet', 'disposition', 'disposition_source', 
+        'prediction_confidence'
+    ]
     
-    # Optionally include actual disposition for comparison
-    if include_actual and "actual_disposition" in row:
-        result["actual_disposition"] = row.actual_disposition
+    # Build column list dynamically based on what's available
+    columns_to_include = [col for col in base_columns if col in df_subset.columns]
     
-    # Optionally include full probabilities
+    if include_actual and 'actual_disposition' in df_subset.columns:
+        columns_to_include.append('actual_disposition')
+    
+    prob_col_names = []
     if include_probabilities and model_loaded:
-        probabilities = {}
-        for class_name in label_encoder.classes_:
-            col_name = f"prob_{class_name}"
-            if col_name in row:
-                probabilities[class_name] = float(row[col_name])
-        if probabilities:
-            result["probabilities"] = probabilities
+        prob_col_names = [f"prob_{class_name}" for class_name in label_encoder.classes_]
+        columns_to_include.extend([col for col in prob_col_names if col in df_subset.columns])
     
-    return result
+    # Use pandas to_dict with 'records' orientation for fast conversion
+    # Reset index to avoid index in output
+    result_df = df_subset[columns_to_include].reset_index(drop=True)
+    
+    # Rename prediction_confidence to confidence
+    if 'prediction_confidence' in result_df.columns:
+        result_df.rename(columns={'prediction_confidence': 'confidence'}, inplace=True)
+    
+    # Convert to dict efficiently using orient='records' (fastest for this use case)
+    records = result_df.to_dict('records')
+    
+    # Post-process for probabilities structure (if needed) - optimized
+    if include_probabilities and model_loaded and prob_col_names:
+        for record in records:
+            probabilities = {}
+            for class_name in label_encoder.classes_:
+                col_name = f"prob_{class_name}"
+                if col_name in record:
+                    probabilities[class_name] = record.pop(col_name)
+            if probabilities:
+                record['probabilities'] = probabilities
+    
+    return records
 
 # -------- endpoints --------
 @app.get("/", summary="API Info")
@@ -272,9 +374,9 @@ def root():
     }
 
 @app.get("/planets", response_model=List[dict])
-def list_planets(
+async def list_planets(
     skip: int = Query(0, ge=0, description="Rows to skip (pagination start)"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum rows to return"),
+    limit: Optional[int] = Query(100, ge=1, description="Maximum rows to return (default: 100, no maximum limit)"),
     disposition: Optional[str] = Query(
         None, 
         description="Filter by predicted disposition: CONFIRMED, FALSE_POSITIVE, CANDIDATE"
@@ -294,7 +396,7 @@ def list_planets(
     
     **Parameters:**
     - **skip**: Number of rows to skip (pagination)
-    - **limit**: Maximum rows to return (1-1000)
+    - **limit**: Maximum rows to return (default: 100, set to None or very high value for all results)
     - **disposition**: Filter by predicted disposition
     - **only_confirmed**: Only return predicted confirmed exoplanets
     - **include_actual**: Include actual disposition for comparison
@@ -303,26 +405,32 @@ def list_planets(
     **Returns:**
     - List of KOI objects with ML-predicted dispositions
     """
-    subset = df.copy()
+    # Use view instead of copy for better performance
+    subset = df
     
-    # Filter by predicted disposition
+    # Apply filters early to reduce dataset size (optimized order)
+    # Filter by disposition first (most selective)
     if disposition:
         disp_upper = disposition.upper().replace("_", " ")  # FALSE_POSITIVE -> FALSE POSITIVE
+        # Use categorical comparison for speed
         subset = subset[subset["disposition"] == disp_upper]
     
-    # Filter predicted confirmed only
+    # Then filter by confirmed status
     if only_confirmed is True:
         subset = subset[subset["is_exoplanet"] == True]
 
-    # Pagination
-    rows = subset.iloc[skip : skip + limit]
+    # Apply pagination on filtered data
+    if limit is None:
+        rows = subset.iloc[skip:]
+    else:
+        rows = subset.iloc[skip : skip + limit]
     
-    return [row_to_dict(r, include_actual=include_actual, include_probabilities=include_probabilities) 
-            for _, r in rows.iterrows()]
+    # Use optimized vectorized conversion
+    return df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
 
 
 @app.get("/planets/{kepid}", response_model=dict)
-def get_planet(
+async def get_planet(
     kepid: int,
     include_actual: bool = Query(
         False, description="Include actual disposition for comparison"
@@ -342,13 +450,20 @@ def get_planet(
     **Returns:**
     - KOI object with ML-predicted disposition
     """
-    rows = df[df["kepid"] == kepid]
-    if rows.empty:
+    # Use index-based lookup for O(1) access
+    try:
+        row = df.loc[kepid:kepid]  # Returns DataFrame with single row
+        if row.empty:
+            raise KeyError
+    except KeyError:
         raise HTTPException(
             status_code=404,
             detail=f"Kepler ID {kepid} not found in table.",
         )
-    return row_to_dict(rows.iloc[0], include_actual=include_actual, include_probabilities=include_probabilities)
+    
+    # Use optimized conversion
+    result = df_to_dict_list(row, include_actual=include_actual, include_probabilities=include_probabilities)
+    return result[0]
 
 
 @app.get("/model/status", response_model=ModelStatus)
