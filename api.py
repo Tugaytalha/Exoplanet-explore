@@ -24,6 +24,16 @@ if not DATA_PATH.exists():
 
 df = pd.read_csv(DATA_PATH)
 
+# Check if required column exists
+if "koi_disposition" not in df.columns:
+    print(f"⚠️  WARNING: 'koi_disposition' column not found in data file!")
+    print(f"   Available columns: {list(df.columns[:10])}...")
+    print(f"   Please run fetch.py to regenerate the data file.")
+    raise ValueError(
+        "Data file is missing 'koi_disposition' column. "
+        "Run 'python fetch.py' to fetch data with all required columns."
+    )
+
 # Map dispositions to simplified categories
 def map_disposition(disp):
     """Map disposition to boolean and category."""

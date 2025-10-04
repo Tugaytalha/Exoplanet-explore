@@ -43,15 +43,35 @@ echo "================================"\n\
 echo "Exoplanet Explorer API - Startup"\n\
 echo "================================"\n\
 \n\
-# Check if data exists\n\
-if [ ! -f "data/koi_with_relative_location.csv" ]; then\n\
+# Function to check if data file has required columns\n\
+check_data_file() {\n\
+    if [ -f "data/koi_with_relative_location.csv" ]; then\n\
+        # Check if file has koi_disposition column\n\
+        if head -1 data/koi_with_relative_location.csv | grep -q "koi_disposition"; then\n\
+            return 0  # File is valid\n\
+        else\n\
+            return 1  # File is invalid\n\
+        fi\n\
+    else\n\
+        return 1  # File does not exist\n\
+    fi\n\
+}\n\
+\n\
+# Check if data exists and is valid\n\
+if check_data_file; then\n\
     echo ""\n\
-    echo "Step 1: Fetching data from NASA..."\n\
+    echo "✅ Data file exists and is valid"\n\
+else\n\
+    if [ -f "data/koi_with_relative_location.csv" ]; then\n\
+        echo ""\n\
+        echo "⚠️  Data file exists but is missing required columns"\n\
+        echo "   Regenerating data..."\n\
+    else\n\
+        echo ""\n\
+        echo "Step 1: Fetching data from NASA..."\n\
+    fi\n\
     python fetch.py\n\
     echo "✅ Data fetched successfully!"\n\
-else\n\
-    echo ""\n\
-    echo "✅ Data already exists, skipping fetch"\n\
 fi\n\
 \n\
 # Check if model exists\n\
