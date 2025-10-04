@@ -303,19 +303,93 @@ if not mongodb_populated:
 
 # -------- Response Models --------
 class PlanetInfo(BaseModel):
+    """
+    Comprehensive KOI response model with all available fields.
+    
+    **Categories:**
+    - Identity/Location: kepid, tic_id, kepoi_name, kepler_name, hostname, ra, dec
+    - Transit Core: koi_period, koi_time0bk, koi_duration, koi_depth, koi_ror, koi_dor, koi_impact, koi_model_snr, koi_num_transits
+    - Stellar: st_teff, st_rad, st_mass, koi_steff, koi_srad, koi_smass
+    - Derived: koi_prad, koi_sma, koi_teq, koi_insol
+    - Disposition: koi_disposition, koi_pdisposition, disposition, is_exoplanet, koi_fpflag_*
+    - Photometry: koi_kepmag, sy_gaiamag, sy_tmag
+    - 3D/Sky: sy_dist, sy_plx, x_pc, y_pc, z_pc, dist_ly
+    
+    All fields are optional and depend on data availability.
+    """
+    # Identity
     kepid: int
-    kepoi_name: Optional[str]
-    kepler_name: Optional[str]
-    x_pc: Optional[float]
-    y_pc: Optional[float]
-    z_pc: Optional[float]
-    dist_ly: Optional[float]
-    is_exoplanet: Optional[bool]
+    tic_id: Optional[str] = None
+    kepoi_name: Optional[str] = None
+    kepler_name: Optional[str] = None
+    hostname: Optional[str] = None
+    
+    # Coordinates
+    ra: Optional[float] = None
+    dec: Optional[float] = None
+    ra_str: Optional[str] = None
+    dec_str: Optional[str] = None
+    
+    # Transit parameters (core)
+    koi_period: Optional[float] = None
+    koi_period_err1: Optional[float] = None
+    koi_period_err2: Optional[float] = None
+    koi_time0bk: Optional[float] = None
+    koi_duration: Optional[float] = None
+    koi_depth: Optional[float] = None
+    koi_ror: Optional[float] = None
+    koi_dor: Optional[float] = None
+    koi_impact: Optional[float] = None
+    koi_model_snr: Optional[float] = None
+    koi_num_transits: Optional[int] = None
+    
+    # Stellar parameters
+    st_teff: Optional[float] = None
+    st_rad: Optional[float] = None
+    st_mass: Optional[float] = None
+    koi_steff: Optional[float] = None
+    koi_srad: Optional[float] = None
+    koi_smass: Optional[float] = None
+    
+    # Derived parameters
+    koi_prad: Optional[float] = None
+    koi_sma: Optional[float] = None
+    koi_teq: Optional[float] = None
+    koi_insol: Optional[float] = None
+    
+    # Disposition
+    koi_disposition: Optional[str] = None
+    koi_pdisposition: Optional[str] = None
     disposition: str
     disposition_source: str
+    is_exoplanet: Optional[bool] = None
     confidence: Optional[float] = None
+    
+    # False positive flags
+    koi_fpflag_nt: Optional[int] = None
+    koi_fpflag_ss: Optional[int] = None
+    koi_fpflag_co: Optional[int] = None
+    koi_fpflag_ec: Optional[int] = None
+    
+    # Photometry
+    koi_kepmag: Optional[float] = None
+    sy_gaiamag: Optional[float] = None
+    sy_tmag: Optional[float] = None
+    
+    # 3D position
+    sy_dist: Optional[float] = None
+    sy_plx: Optional[float] = None
+    x_pc: Optional[float] = None
+    y_pc: Optional[float] = None
+    z_pc: Optional[float] = None
+    dist_ly: Optional[float] = None
+    
+    # Optional fields
     actual_disposition: Optional[str] = None
     probabilities: Optional[Dict[str, float]] = None
+    
+    class Config:
+        extra = "allow"  # Allow additional fields from MongoDB
 
 class ModelStatus(BaseModel):
     model_loaded: bool
@@ -344,18 +418,76 @@ app.add_middleware(
 def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, include_probabilities: bool = False) -> list:
     """Convert DataFrame to list of API response dictionaries using vectorized operations."""
     
-    # Select base columns
+    # Essential columns - Kimlik/konum (Identity/Location)
     base_columns = [
-        'kepid', 'kepoi_name', 'kepler_name', 'x_pc', 'y_pc', 'z_pc', 
-        'dist_ly', 'is_exoplanet', 'disposition', 'disposition_source', 
-        'prediction_confidence'
+        'kepid', 'tic_id', 'kepoi_name', 'kepler_name', 'hostname',
+        'ra', 'dec', 'ra_str', 'dec_str',
     ]
     
+    # Transit core columns - Transit çekirdeği
+    transit_columns = [
+        'koi_period', 'koi_period_err1', 'koi_period_err2',
+        'koi_time0bk', 'koi_time0bk_err1', 'koi_time0bk_err2',
+        'koi_duration', 'koi_duration_err1', 'koi_duration_err2',
+        'koi_depth', 'koi_depth_err1', 'koi_depth_err2',
+        'koi_ror', 'koi_ror_err1', 'koi_ror_err2',
+        'koi_dor', 'koi_dor_err1', 'koi_dor_err2',
+        'koi_impact', 'koi_impact_err1', 'koi_impact_err2',
+        'koi_model_snr', 'koi_num_transits',
+    ]
+    
+    # Stellar parameters - Yıldız
+    stellar_columns = [
+        'st_teff', 'st_rad', 'st_mass',
+        'koi_steff', 'koi_srad', 'koi_smass',
+        'koi_steff_err1', 'koi_steff_err2',
+        'koi_srad_err1', 'koi_srad_err2',
+        'koi_smass_err1', 'koi_smass_err2',
+    ]
+    
+    # Derived/display parameters - Türev/gösterim
+    derived_columns = [
+        'koi_prad', 'koi_prad_err1', 'koi_prad_err2',
+        'koi_sma', 'koi_sma_err1', 'koi_sma_err2',
+        'koi_teq', 'koi_teq_err1', 'koi_teq_err2',
+        'koi_insol', 'koi_insol_err1', 'koi_insol_err2',
+    ]
+    
+    # Disposition/filters - Rozet/filtre
+    disposition_columns = [
+        'koi_disposition', 'koi_pdisposition',
+        'koi_fpflag_nt', 'koi_fpflag_ss', 'koi_fpflag_co', 'koi_fpflag_ec',
+        'disposition', 'disposition_source', 'prediction_confidence',
+        'is_exoplanet',
+    ]
+    
+    # Photometry - Fotometri
+    photometry_columns = [
+        'koi_kepmag', 'koi_kepmag_err',
+        'sy_gaiamag', 'sy_gaiamagerr1',
+        'sy_tmag', 'sy_tmagerr1',
+    ]
+    
+    # 3D/Sky position - 3D/sky
+    sky_columns = [
+        'sy_dist', 'sy_disterr1', 'sy_disterr2',
+        'sy_plx', 'sy_plxerr1', 'sy_plxerr2',
+        'x_pc', 'y_pc', 'z_pc', 'dist_ly',
+    ]
+    
+    # Combine all columns
+    all_columns = (base_columns + transit_columns + stellar_columns + 
+                   derived_columns + disposition_columns + 
+                   photometry_columns + sky_columns)
+    
     # Build column list dynamically based on what's available
-    columns_to_include = [col for col in base_columns if col in df_subset.columns]
+    columns_to_include = [col for col in all_columns if col in df_subset.columns]
     
     if include_actual and 'actual_disposition' in df_subset.columns:
-        columns_to_include.append('actual_disposition')
+        if 'actual_disposition' not in columns_to_include:
+            columns_to_include.append('actual_disposition')
+        if 'actual_is_exoplanet' in df_subset.columns and 'actual_is_exoplanet' not in columns_to_include:
+            columns_to_include.append('actual_is_exoplanet')
     
     if include_probabilities and model_loaded:
         prob_columns = [f"prob_{class_name}" for class_name in label_encoder.classes_]
@@ -451,18 +583,25 @@ def list_planets(
     ),
 ):
     """
-    List KOI rows with ML-predicted dispositions.
+    List KOI rows with ML-predicted dispositions and comprehensive planet data.
     
     **Parameters:**
     - **skip**: Number of rows to skip (pagination)
     - **limit**: Maximum rows to return (default: 100, set to None or very high value for all results)
-    - **disposition**: Filter by predicted disposition
+    - **disposition**: Filter by predicted disposition (CONFIRMED, FALSE_POSITIVE, CANDIDATE)
     - **only_confirmed**: Only return predicted confirmed exoplanets
     - **include_actual**: Include actual disposition for comparison
-    - **include_probabilities**: Include full probabilities
+    - **include_probabilities**: Include full probability distribution
     
     **Returns:**
-    - List of KOI objects with ML-predicted dispositions
+    - List of KOI objects with comprehensive data including:
+      - **Identity/Location**: kepid, tic_id, ra, dec, kepoi_name, kepler_name, hostname
+      - **Transit Core**: koi_period, koi_time0bk, koi_duration, koi_depth, koi_ror, koi_dor, koi_impact, koi_model_snr, koi_num_transits (+ error columns)
+      - **Stellar Parameters**: st_teff, st_rad, st_mass, koi_steff, koi_srad, koi_smass (+ error columns)
+      - **Derived Parameters**: koi_prad, koi_sma, koi_teq, koi_insol (+ error columns)
+      - **Disposition/Filters**: koi_disposition, koi_pdisposition, disposition, is_exoplanet, koi_fpflag_*
+      - **Photometry**: koi_kepmag, sy_gaiamag, sy_tmag (+ error columns)
+      - **3D/Sky Position**: sy_dist, sy_plx, x_pc, y_pc, z_pc, dist_ly (+ error columns)
     """
     
     # Use MongoDB if available and populated
@@ -481,9 +620,10 @@ def list_planets(
                 query['is_exoplanet'] = True
             
             # Build projection (fields to include/exclude)
+            # By default, include all fields except _id and conditionally exclude some
             projection = {'_id': 0}  # Exclude MongoDB _id
             
-            # Exclude fields based on parameters
+            # Conditionally exclude fields based on parameters
             if not include_actual:
                 projection['actual_disposition'] = 0
                 projection['actual_is_exoplanet'] = 0
@@ -548,15 +688,16 @@ def get_planet(
     )
 ):
     """
-    Get a single KOI by its Kepler ID with ML-predicted disposition.
+    Get a single KOI by its Kepler ID with comprehensive planet data.
     
     **Parameters:**
     - **kepid**: Kepler ID (integer)
     - **include_actual**: Include actual disposition for comparison
-    - **include_probabilities**: Include full probabilities
+    - **include_probabilities**: Include full probability distribution
     
     **Returns:**
-    - KOI object with ML-predicted disposition
+    - KOI object with comprehensive data including all transit, stellar, derived, 
+      photometric, and positional parameters (see /planets endpoint for full list)
     """
     
     # Use MongoDB if available and populated
@@ -631,6 +772,87 @@ def get_statistics():
     **Returns:**
     - Comprehensive statistics about predictions and model performance
     """
+    
+    # Use MongoDB for stats if available
+    if mongodb_populated and mongo_collection is not None:
+        try:
+            total_kois = mongo_collection.count_documents({})
+            
+            # Predicted counts
+            predicted_counts = {
+                "CONFIRMED": mongo_collection.count_documents({"disposition": "CONFIRMED"}),
+                "FALSE_POSITIVE": mongo_collection.count_documents({"disposition": "FALSE POSITIVE"}),
+                "CANDIDATE": mongo_collection.count_documents({"disposition": "CANDIDATE"}),
+            }
+            
+            # Actual counts
+            actual_counts = {
+                "CONFIRMED": mongo_collection.count_documents({"actual_disposition": "CONFIRMED"}),
+                "FALSE_POSITIVE": mongo_collection.count_documents({"actual_disposition": "FALSE_POSITIVE"}),
+                "CANDIDATE": mongo_collection.count_documents({"actual_disposition": "CANDIDATE"}),
+            }
+            
+            # Calculate percentages
+            predicted_percentages = {
+                "CONFIRMED": round(predicted_counts["CONFIRMED"] / total_kois * 100, 2) if total_kois > 0 else 0,
+                "FALSE_POSITIVE": round(predicted_counts["FALSE_POSITIVE"] / total_kois * 100, 2) if total_kois > 0 else 0,
+                "CANDIDATE": round(predicted_counts["CANDIDATE"] / total_kois * 100, 2) if total_kois > 0 else 0,
+            }
+            
+            # Count documents with coordinates and distance
+            with_coordinates = mongo_collection.count_documents({
+                "x_pc": {"$ne": None},
+                "y_pc": {"$ne": None},
+                "z_pc": {"$ne": None}
+            })
+            with_distance = mongo_collection.count_documents({"dist_ly": {"$ne": None}})
+            
+            # Get disposition source
+            sample_doc = mongo_collection.find_one({}, {"disposition_source": 1})
+            disposition_source = sample_doc.get("disposition_source", "unknown") if sample_doc else "unknown"
+            
+            stats = {
+                "total_kois": total_kois,
+                "predicted_counts": predicted_counts,
+                "predicted_percentages": predicted_percentages,
+                "actual_counts": actual_counts,
+                "with_coordinates": with_coordinates,
+                "with_distance": with_distance,
+                "model_available": model_loaded,
+                "mongodb_source": True,
+                "disposition_source": disposition_source,
+            }
+            
+            # Calculate model accuracy using MongoDB aggregation
+            if model_loaded:
+                # Count where disposition == actual_disposition
+                correct_predictions = mongo_collection.count_documents({
+                    "$expr": {"$eq": ["$disposition", "$actual_disposition"]}
+                })
+                
+                stats["model_accuracy"] = round(correct_predictions / total_kois * 100, 2) if total_kois > 0 else 0
+                stats["correct_predictions"] = correct_predictions
+                
+                # Per-class accuracy
+                per_class_accuracy = {}
+                for class_name in ["CONFIRMED", "FALSE_POSITIVE", "CANDIDATE"]:
+                    actual_count = actual_counts[class_name]
+                    if actual_count > 0:
+                        correct = mongo_collection.count_documents({
+                            "actual_disposition": class_name,
+                            "$expr": {"$eq": ["$disposition", "$actual_disposition"]}
+                        })
+                        per_class_accuracy[class_name] = round(correct / actual_count * 100, 2)
+                stats["per_class_accuracy"] = per_class_accuracy
+            
+            return stats
+            
+        except Exception as e:
+            print(f"❌ Error getting stats from MongoDB: {e}")
+            print(f"   Falling back to DataFrame...")
+            # Fall through to DataFrame fallback
+    
+    # Fallback to DataFrame
     stats = {
         "total_kois": len(df),
         "predicted_counts": {
@@ -651,6 +873,7 @@ def get_statistics():
         "with_coordinates": int(df[["x_pc", "y_pc", "z_pc"]].notna().all(axis=1).sum()),
         "with_distance": int(df["dist_ly"].notna().sum()),
         "model_available": model_loaded,
+        "mongodb_source": False,
         "disposition_source": df["disposition_source"].iloc[0] if len(df) > 0 else "unknown",
     }
     
