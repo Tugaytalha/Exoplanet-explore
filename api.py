@@ -116,7 +116,7 @@ if df is None:
         )
 
     df = pd.read_csv(DATA_PATH)
-        print(f"✅ Loaded {len(df)} rows from CSV")
+    print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
     if "koi_disposition" not in df.columns:
