@@ -28,12 +28,9 @@ COPY entrypoint.sh .
 # Make entrypoint executable
 RUN chmod +x entrypoint.sh
 
-# Create directories for data and models (if they don't exist)
+# Create directories for data and models
+# (will be populated by volumes or fetch.py at runtime)
 RUN mkdir -p data model_outputs
-
-# Copy existing data and model directories if available
-COPY data/ ./data/ 2>/dev/null || true
-COPY model_outputs/ ./model_outputs/ 2>/dev/null || true
 
 # Expose port
 EXPOSE 8000
