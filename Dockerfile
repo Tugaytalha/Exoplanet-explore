@@ -75,7 +75,12 @@ else\n\
 fi\n\
 \n\
 # Check if model exists\n\
-if [ ! -f model_outputs/xgboost_koi_disposition_*.joblib ] 2>/dev/null; then\n\
+MODEL_EXISTS=false\n\
+if ls model_outputs/xgboost_koi_disposition_*.joblib 1> /dev/null 2>&1; then\n\
+    MODEL_EXISTS=true\n\
+fi\n\
+\n\
+if [ "$MODEL_EXISTS" = "false" ]; then\n\
     if [ "${SKIP_TRAINING}" = "true" ]; then\n\
         echo ""\n\
         echo "⚠️  Skipping model training (SKIP_TRAINING=true)"\n\
@@ -83,9 +88,20 @@ if [ ! -f model_outputs/xgboost_koi_disposition_*.joblib ] 2>/dev/null; then\n\
     else\n\
         echo ""\n\
         echo "Step 2: Training XGBoost model..."\n\
-        echo "This will take 5-15 minutes..."\n\
+        echo "   This will take 5-15 minutes..."\n\
+        echo "   Training progress will be shown below:"\n\
+        echo ""\n\
         python train_koi_disposition.py\n\
-        echo "✅ Model trained successfully!"\n\
+        \n\
+        # Check if training was successful\n\
+        if ls model_outputs/xgboost_koi_disposition_*.joblib 1> /dev/null 2>&1; then\n\
+            echo ""\n\
+            echo "✅ Model trained successfully!"\n\
+        else\n\
+            echo ""\n\
+            echo "❌ Model training failed!"\n\
+            echo "   API will use dataset dispositions as fallback"\n\
+        fi\n\
     fi\n\
 else\n\
     echo ""\n\

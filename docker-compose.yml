@@ -9,10 +9,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Set to 'true' to skip model training (faster startup, uses dataset dispositions)
+      # Training Configuration
+      # Set to 'false' to train model on first run (recommended)
+      # Set to 'true' to skip training and use dataset dispositions only
       - SKIP_TRAINING=false
     volumes:
-      # Persist data and models (optional)
+      # Persist data and models across container restarts
+      # Comment out these lines to make container fully self-contained
       - ./data:/app/data
       - ./model_outputs:/app/model_outputs
     restart: unless-stopped
@@ -21,7 +24,16 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 120s  # Allow 2 minutes for startup (including training)
+    # Resource limits (adjust based on your system)
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
     networks:
       - exoplanet-network
 
