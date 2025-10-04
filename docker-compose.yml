@@ -1,6 +1,25 @@
 version: '3.8'
 
 services:
+  mongodb:
+    image: mongo:7.0
+    container_name: exoplanet-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=exoplanet_db
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    networks:
+      - exoplanet-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   exoplanet-api:
     build:
       context: .
@@ -13,12 +32,18 @@ services:
       # Set to 'false' to train model on first run (recommended)
       # Set to 'true' to skip training and use dataset dispositions only
       - SKIP_TRAINING=false
+      # MongoDB Configuration
+      - MONGODB_URL=mongodb://mongodb:27017
+      - MONGODB_DB=exoplanet_db
     volumes:
       # Persist data and models across container restarts
       # Comment out these lines to make container fully self-contained
       - ./data:/app/data
       - ./model_outputs:/app/model_outputs
     restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s
@@ -41,3 +66,5 @@ networks:
   exoplanet-network:
     driver: bridge
 
+volumes:
+  mongodb_data:

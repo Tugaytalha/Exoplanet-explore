@@ -7,14 +7,52 @@ import warnings
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import json
+import os
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 warnings.filterwarnings('ignore')
 
 DATA_PATH = Path("data/koi_with_relative_location.csv")
 MODEL_DIR = Path("model_outputs")
+
+# ---------- MongoDB Configuration ----------
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+MONGODB_DB = os.getenv("MONGODB_DB", "exoplanet_db")
+
+# MongoDB client
+mongo_client = None
+mongo_db = None
+mongo_collection = None
+
+def connect_to_mongodb():
+    """Connect to MongoDB and return client, db, and collection."""
+    global mongo_client, mongo_db, mongo_collection
+    
+    try:
+        mongo_client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+        # Test connection
+        mongo_client.admin.command('ping')
+        mongo_db = mongo_client[MONGODB_DB]
+        mongo_collection = mongo_db['planets']
+        print(f"✅ Connected to MongoDB at {MONGODB_URL}")
+        print(f"   Database: {MONGODB_DB}")
+        print(f"   Collection: planets")
+        return True
+    except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+        print(f"⚠️  Could not connect to MongoDB: {e}")
+        print(f"   Continuing without MongoDB integration")
+        return False
+    except Exception as e:
+        print(f"⚠️  Unexpected error connecting to MongoDB: {e}")
+        return False
+
+# Try to connect to MongoDB at startup
+mongo_connected = connect_to_mongodb()
 
 # ---------- load & prepare the table once at startup ----------
 if not DATA_PATH.exists():
@@ -22,18 +60,7 @@ if not DATA_PATH.exists():
         f"{DATA_PATH} not found – run fetch.py first to create it."
     )
 
-df = pd.read_csv(DATA_PATH, low_memory=False)
-
-print(f"📊 Loaded data: {len(df)} rows")
-
-# Remove duplicates - keep only first occurrence of each kepid/kepoi_name pair
-# The dataset contains multiple rows per KOI from different data releases/sources
-original_count = len(df)
-df = df.drop_duplicates(subset=['kepid', 'kepoi_name'], keep='first')
-duplicate_count = original_count - len(df)
-if duplicate_count > 0:
-    print(f"🔧 Removed {duplicate_count} duplicate rows (kept first occurrence)")
-    print(f"   Unique KOIs: {len(df)}")
+df = pd.read_csv(DATA_PATH)
 
 # Check if required column exists
 if "koi_disposition" not in df.columns:
@@ -213,11 +240,66 @@ def predict_all_dispositions():
 # Run predictions at startup
 predict_all_dispositions()
 
-# Optimize DataFrame for faster queries
-print("🔧 Optimizing DataFrame for queries...")
-# Set kepid as index for O(1) lookups
-df.set_index('kepid', drop=False, inplace=True)
-print("✅ DataFrame optimized!")
+# ---------- Write predictions to MongoDB ----------
+def populate_mongodb():
+    """Write all predicted data to MongoDB."""
+    if not mongo_connected or mongo_collection is None:
+        print("⚠️  MongoDB not connected. Skipping data population.")
+        return False
+    
+    print("📤 Writing data to MongoDB...")
+    
+    try:
+        # Convert DataFrame to list of dicts
+        records = df.to_dict('records')
+        
+        # Clean up records (convert NaN to None, handle numpy types)
+        cleaned_records = []
+        for record in records:
+            cleaned_record = {}
+            for key, value in record.items():
+                # Convert numpy types to Python types
+                if pd.isna(value):
+                    cleaned_record[key] = None
+                elif isinstance(value, (np.integer, np.floating)):
+                    cleaned_record[key] = value.item()
+                elif isinstance(value, np.bool_):
+                    cleaned_record[key] = bool(value)
+                else:
+                    cleaned_record[key] = value
+            cleaned_records.append(cleaned_record)
+        
+        # Drop existing collection and recreate
+        mongo_collection.drop()
+        print(f"   Inserting {len(cleaned_records)} documents...")
+        
+        # Insert in batches for better performance
+        batch_size = 1000
+        for i in range(0, len(cleaned_records), batch_size):
+            batch = cleaned_records[i:i + batch_size]
+            mongo_collection.insert_many(batch, ordered=False)
+        
+        # Create index on kepid for fast lookups
+        mongo_collection.create_index('kepid', unique=True)
+        mongo_collection.create_index('disposition')
+        mongo_collection.create_index('is_exoplanet')
+        
+        print(f"✅ Successfully wrote {len(cleaned_records)} documents to MongoDB")
+        print(f"   Created indexes on: kepid, disposition, is_exoplanet")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error writing to MongoDB: {e}")
+        return False
+
+# Populate MongoDB with predicted data
+mongodb_populated = populate_mongodb()
+
+# Optimize DataFrame for faster queries (fallback if MongoDB fails)
+if not mongodb_populated:
+    print("🔧 Optimizing DataFrame for queries...")
+    df.set_index('kepid', drop=False, inplace=True)
+    print("✅ DataFrame optimized (using as fallback)")
 
 # -------- Response Models --------
 class PlanetInfo(BaseModel):
@@ -246,7 +328,16 @@ app = FastAPI(
     title="Kepler KOI Exoplanet Classification API",
     description="Serves Kepler Objects of Interest with real disposition data "
                 "and optional ML model predictions using XGBoost classifier.",
-    version="2.0.0",
+    version="3.0.0",
+)
+
+# Enable CORS for all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
 
 # helper – convert dataframe to list of dictionaries efficiently
@@ -300,16 +391,39 @@ def root():
     """
     Get API information and status.
     """
+    # Get counts from MongoDB if available, otherwise from DataFrame
+    if mongodb_populated and mongo_collection is not None:
+        try:
+            total_kois = mongo_collection.count_documents({})
+            predicted_confirmed = mongo_collection.count_documents({"disposition": "CONFIRMED"})
+            predicted_false_positive = mongo_collection.count_documents({"disposition": "FALSE POSITIVE"})
+            predicted_candidate = mongo_collection.count_documents({"disposition": "CANDIDATE"})
+            data_source = "mongodb"
+        except:
+            total_kois = len(df)
+            predicted_confirmed = int((df["disposition"] == "CONFIRMED").sum())
+            predicted_false_positive = int((df["disposition"] == "FALSE POSITIVE").sum())
+            predicted_candidate = int((df["disposition"] == "CANDIDATE").sum())
+            data_source = "dataframe"
+    else:
+        total_kois = len(df)
+        predicted_confirmed = int((df["disposition"] == "CONFIRMED").sum())
+        predicted_false_positive = int((df["disposition"] == "FALSE POSITIVE").sum())
+        predicted_candidate = int((df["disposition"] == "CANDIDATE").sum())
+        data_source = "dataframe"
+    
     return {
         "name": "Kepler KOI Exoplanet Classification API",
         "version": "3.0.0",
         "description": "API for Kepler Objects of Interest with ML-predicted dispositions",
         "model_loaded": model_loaded,
-        "total_kois": len(df),
-        "predicted_confirmed": int((df["disposition"] == "CONFIRMED").sum()),
-        "predicted_false_positive": int((df["disposition"] == "FALSE POSITIVE").sum()),
-        "predicted_candidate": int((df["disposition"] == "CANDIDATE").sum()),
-        "prediction_source": df["disposition_source"].iloc[0] if len(df) > 0 else "unknown",
+        "mongodb_connected": mongo_connected,
+        "mongodb_populated": mongodb_populated,
+        "data_source": data_source,
+        "total_kois": total_kois,
+        "predicted_confirmed": predicted_confirmed,
+        "predicted_false_positive": predicted_false_positive,
+        "predicted_candidate": predicted_candidate,
         "endpoints": {
             "/planets": "List all KOIs with ML predictions",
             "/planets/{kepid}": "Get specific KOI by Kepler ID",
@@ -350,6 +464,55 @@ def list_planets(
     **Returns:**
     - List of KOI objects with ML-predicted dispositions
     """
+    
+    # Use MongoDB if available and populated
+    if mongodb_populated and mongo_collection is not None:
+        try:
+            # Build MongoDB query
+            query = {}
+            
+            # Filter by disposition
+            if disposition:
+                disp_upper = disposition.upper().replace("_", " ")  # FALSE_POSITIVE -> FALSE POSITIVE
+                query['disposition'] = disp_upper
+            
+            # Filter by confirmed only
+            if only_confirmed is True:
+                query['is_exoplanet'] = True
+            
+            # Build projection (fields to include/exclude)
+            projection = {'_id': 0}  # Exclude MongoDB _id
+            
+            # Exclude fields based on parameters
+            if not include_actual:
+                projection['actual_disposition'] = 0
+                projection['actual_is_exoplanet'] = 0
+            
+            if not include_probabilities:
+                # Exclude probability fields
+                projection['prob_CANDIDATE'] = 0
+                projection['prob_CONFIRMED'] = 0
+                projection['prob_FALSE POSITIVE'] = 0
+            
+            # Query MongoDB with pagination
+            cursor = mongo_collection.find(query, projection).skip(skip)
+            
+            if limit is not None:
+                cursor = cursor.limit(limit)
+            
+            # Convert cursor to list
+            results = list(cursor)
+            
+            print(f"📊 MongoDB query returned {len(results)} results")
+            return results
+            
+        except Exception as e:
+            print(f"❌ Error querying MongoDB: {e}")
+            print(f"   Falling back to DataFrame...")
+            # Fall through to DataFrame fallback
+    
+    # Fallback to DataFrame operations
+    print("📊 Using DataFrame (MongoDB not available)")
     subset = df.copy()
     
     # Filter by predicted disposition
@@ -367,10 +530,11 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-        rows = subset.iloc[skip : skip + limit]
+    rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
-    return df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
+    results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
+    return results
 
 
 @app.get("/planets/{kepid}", response_model=dict)
@@ -394,7 +558,40 @@ def get_planet(
     **Returns:**
     - KOI object with ML-predicted disposition
     """
-    # Use index-based lookup for O(1) access
+    
+    # Use MongoDB if available and populated
+    if mongodb_populated and mongo_collection is not None:
+        try:
+            # Build projection
+            projection = {'_id': 0}
+            
+            if not include_actual:
+                projection['actual_disposition'] = 0
+                projection['actual_is_exoplanet'] = 0
+            
+            if not include_probabilities:
+                projection['prob_CANDIDATE'] = 0
+                projection['prob_CONFIRMED'] = 0
+                projection['prob_FALSE POSITIVE'] = 0
+            
+            # Query MongoDB
+            planet_data = mongo_collection.find_one({'kepid': kepid}, projection)
+            
+            if planet_data:
+                return planet_data
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Kepler ID {kepid} not found in database.",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"❌ Error querying MongoDB for kepid {kepid}: {e}")
+            print(f"   Falling back to DataFrame...")
+            # Fall through to DataFrame fallback
+    
+    # Fallback to DataFrame
     try:
         row = df.loc[kepid:kepid]  # Returns DataFrame with single row
         if row.empty:

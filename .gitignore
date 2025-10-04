@@ -35,3 +35,6 @@ others/envs/others/envs/conda_env_exoplnt_dl_hecc.yml
 others/envs/others/envs/conda_env_exoplnt_dl_tf2_13.yml
 eski
 *.csv
+data/koi_cumulative.csv
+data/koi_with_relative_location.csv
+data/stellarhosts.csv
