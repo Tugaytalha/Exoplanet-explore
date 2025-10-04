@@ -57,6 +57,7 @@ class KOIDispositionPredictor:
     def __init__(self, config):
         self.config = config
         self.model = None
+        self.imputer = None
         self.scaler = None
         self.label_encoder = None
         self.feature_names = None
@@ -229,10 +230,10 @@ class KOIDispositionPredictor:
         
         print("\n1. Imputing missing values...")
         # Use median imputation for numeric features
-        imputer = SimpleImputer(strategy='median')
-        X_train_imputed = imputer.fit_transform(X_train)
-        X_val_imputed = imputer.transform(X_val)
-        X_test_imputed = imputer.transform(X_test)
+        self.imputer = SimpleImputer(strategy='median')
+        X_train_imputed = self.imputer.fit_transform(X_train)
+        X_val_imputed = self.imputer.transform(X_val)
+        X_test_imputed = self.imputer.transform(X_test)
         
         # Count total missing values before imputation
         if isinstance(X_train, pd.DataFrame):
@@ -558,6 +559,14 @@ class KOIDispositionPredictor:
         )
         joblib.dump(self.model, model_path)
         print(f"\n✓ Model saved to: {model_path}")
+        
+        # Save imputer
+        imputer_path = os.path.join(
+            self.config['output_dir'],
+            f"imputer_{timestamp}.joblib"
+        )
+        joblib.dump(self.imputer, imputer_path)
+        print(f"✓ Imputer saved to: {imputer_path}")
         
         # Save scaler
         scaler_path = os.path.join(

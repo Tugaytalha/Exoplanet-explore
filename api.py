@@ -22,7 +22,18 @@ if not DATA_PATH.exists():
         f"{DATA_PATH} not found – run fetch.py first to create it."
     )
 
-df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(DATA_PATH, low_memory=False)
+
+print(f"📊 Loaded data: {len(df)} rows")
+
+# Remove duplicates - keep only first occurrence of each kepid/kepoi_name pair
+# The dataset contains multiple rows per KOI from different data releases/sources
+original_count = len(df)
+df = df.drop_duplicates(subset=['kepid', 'kepoi_name'], keep='first')
+duplicate_count = original_count - len(df)
+if duplicate_count > 0:
+    print(f"🔧 Removed {duplicate_count} duplicate rows (kept first occurrence)")
+    print(f"   Unique KOIs: {len(df)}")
 
 # Check if required column exists
 if "koi_disposition" not in df.columns:
@@ -55,13 +66,14 @@ df["actual_is_exoplanet"] = df["koi_disposition"].apply(lambda x: map_dispositio
 
 # ---------- Load trained model (if available) ----------
 trained_model = None
+imputer = None
 scaler = None
 label_encoder = None
 feature_names = None
 
 def load_latest_model():
     """Load the most recent trained model artifacts."""
-    global trained_model, scaler, label_encoder, feature_names
+    global trained_model, imputer, scaler, label_encoder, feature_names
     
     try:
         if not MODEL_DIR.exists():
@@ -81,6 +93,16 @@ def load_latest_model():
         
         # Load artifacts
         trained_model = joblib.load(latest_model)
+        
+        # Load imputer (handle old models without imputer)
+        imputer_path = MODEL_DIR / f"imputer_{timestamp}.joblib"
+        if imputer_path.exists():
+            imputer = joblib.load(imputer_path)
+            print(f"✅ Loaded imputer")
+        else:
+            print(f"⚠️  No imputer found (old model). Missing values will be filled with 0.")
+            imputer = None
+        
         scaler = joblib.load(MODEL_DIR / f"scaler_{timestamp}.joblib")
         label_encoder = joblib.load(MODEL_DIR / f"label_encoder_{timestamp}.joblib")
         
@@ -118,18 +140,26 @@ def predict_all_dispositions():
         # Prepare features for all rows
         X_all = df.copy()
         
-        # Select features
-        available_features = [f for f in feature_names if f in X_all.columns]
-        X_features = pd.DataFrame(columns=feature_names)
+        # Select only the features used in training, in the correct order
+        missing_features = [f for f in feature_names if f not in X_all.columns]
+        if missing_features:
+            print(f"⚠️  {len(missing_features)} features missing from data, filling with 0")
+            for feat in missing_features:
+                X_all[feat] = 0
         
-        for feat in available_features:
-            X_features[feat] = X_all[feat]
+        # Select features in exact order as training
+        X_features = X_all[feature_names].copy()
         
-        # Fill missing features with 0
-        X_features = X_features.fillna(0)
+        # Impute missing values using the same strategy as training
+        if imputer is not None:
+            X_imputed = imputer.transform(X_features)
+        else:
+            # Fallback for old models without imputer
+            print("⚠️  Using zero-fill (no imputer available)")
+            X_imputed = X_features.fillna(0).values
         
         # Scale
-        X_scaled = scaler.transform(X_features)
+        X_scaled = scaler.transform(X_imputed)
         
         # Predict
         predictions = trained_model.predict(X_scaled)
