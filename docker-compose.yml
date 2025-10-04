@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   exoplanet-api:
     build:
@@ -6,24 +8,24 @@ services:
     container_name: exoplanet-api
     ports:
       - "8000:8000"
+    environment:
+      # Set to 'true' to skip model training (faster startup, uses dataset dispositions)
+      - SKIP_TRAINING=false
     volumes:
-      # Mount data and model directories for persistence
+      # Persist data and models (optional)
       - ./data:/app/data
       - ./model_outputs:/app/model_outputs
-      # Optional: Mount code for development (hot reload)
-      # - ./api.py:/app/api.py
-    environment:
-      - PYTHONUNBUFFERED=1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
     networks:
       - exoplanet-network
 
 networks:
   exoplanet-network:
     driver: bridge
+
