@@ -1514,7 +1514,7 @@ async def train_custom_model(
         saved_paths = predictor.save_model_artifacts(results, cv_results)
         
         # Model download path
-        model_filename = saved_paths['model'].split('/')[-1]
+        model_filename = saved_paths['model_path'].split('/')[-1]
         
         print(f"\n{'='*70}")
         print(f"✅ TRAINING COMPLETE")
@@ -1565,9 +1565,9 @@ async def train_custom_model(
             "model_files": {
                 "model": model_filename,
                 "download_url": f"/download/{model_filename}",
-                "scaler": saved_paths['scaler'].split('/')[-1],
-                "label_encoder": saved_paths['label_encoder'].split('/')[-1],
-                "feature_names": saved_paths['feature_names'].split('/')[-1]
+                "scaler": saved_paths['scaler_path'].split('/')[-1],
+                "label_encoder": saved_paths['encoder_path'].split('/')[-1],
+                "feature_names": saved_paths['features_path'].split('/')[-1]
             },
             "visualization": {
                 "plot_base64": plot_base64,

@@ -58,6 +58,7 @@ def test_train_endpoint():
             print("   ✅ Model saving method fixed")
             print("   ✅ Model saving arguments fixed")
             print("   ✅ Results dictionary keys fixed")
+            print("   ✅ Saved paths dictionary keys fixed")
         else:
             print(f"❌ Error: {response.status_code}")
             print(f"Response: {response.text}")
