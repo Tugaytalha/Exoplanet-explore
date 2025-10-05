@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test File Upload - Exoplanet API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+        }
+        
+        label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+        
+        input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            background: #f8f9ff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        input[type="file"]:hover {
+            border-color: #764ba2;
+            background: #f0f0ff;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        
+        .checkbox-label {
+            display: inline;
+            margin-bottom: 0;
+            cursor: pointer;
+        }
+        
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .status.show {
+            display: block;
+        }
+        
+        .status.loading {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            color: #856404;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            color: #155724;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            color: #721c24;
+        }
+        
+        .results {
+            margin-top: 30px;
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+            text-align: center;
+        }
+        
+        .metric-label {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+        
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .visualization {
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .visualization img {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .download-link {
+            display: inline-block;
+            margin-top: 15px;
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            transition: background 0.3s ease;
+        }
+        
+        .download-link:hover {
+            background: #218838;
+        }
+        
+        pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Exoplanet Model Training</h1>
+        <p class="subtitle">Upload CSV data to train a custom XGBoost model</p>
+        
+        <form id="uploadForm">
+            <div class="form-group">
+                <label for="fileInput">📁 Training Data (CSV File)</label>
+                <input type="file" id="fileInput" accept=".csv" required>
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    Must include 'koi_disposition' column
+                </small>
+            </div>
+            
+            <div class="form-group">
+                <label for="modelName">📝 Model Name</label>
+                <input type="text" id="modelName" value="custom_model" placeholder="Enter model name">
+            </div>
+            
+            <div class="form-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="useExisting" checked>
+                    <label for="useExisting" class="checkbox-label">
+                        Combine with existing dataset
+                    </label>
+                </div>
+                <small style="color: #666; display: block; margin-top: 5px; margin-left: 30px;">
+                    If unchecked, only your uploaded data will be used
+                </small>
+            </div>
+            
+            <button type="submit" id="submitBtn">
+                🎯 Train Model
+            </button>
+        </form>
+        
+        <div id="status" class="status">
+            <div id="statusText"></div>
+        </div>
+        
+        <div id="results" class="results">
+            <h2 style="color: #667eea; margin-bottom: 20px;">📊 Training Results</h2>
+            
+            <div class="metrics-grid" id="metricsGrid"></div>
+            
+            <div class="visualization" id="visualization"></div>
+            
+            <div id="downloadSection"></div>
+            
+            <details style="margin-top: 20px;">
+                <summary style="cursor: pointer; font-weight: 600; color: #667eea;">
+                    🔍 View Raw Response
+                </summary>
+                <pre id="rawResponse"></pre>
+            </details>
+        </div>
+    </div>
+    
+    <script>
+        const API_URL = 'http://localhost:8000';
+        
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('fileInput');
+            const modelName = document.getElementById('modelName').value;
+            const useExisting = document.getElementById('useExisting').checked;
+            const submitBtn = document.getElementById('submitBtn');
+            const statusDiv = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            const resultsDiv = document.getElementById('results');
+            
+            // Validate file
+            if (!fileInput.files[0]) {
+                showStatus('error', '❌ Please select a CSV file');
+                return;
+            }
+            
+            // Prepare form data
+            const formData = new FormData();
+            formData.append('training_file', fileInput.files[0]);
+            formData.append('model_name', modelName);
+            formData.append('use_existing_data', useExisting);
+            
+            // Show loading
+            submitBtn.disabled = true;
+            submitBtn.textContent = '⏳ Training...';
+            resultsDiv.classList.remove('show');
+            showStatus('loading', '🔄 Uploading file and starting training... This may take a few minutes.');
+            statusText.innerHTML += '<div class="spinner"></div>';
+            
+            try {
+                const response = await fetch(`${API_URL}/api/train`, {
+                    method: 'POST',
+                    body: formData,
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Training failed');
+                }
+                
+                const result = await response.json();
+                
+                // Show success
+                showStatus('success', '✅ Model trained successfully!');
+                
+                // Display results
+                displayResults(result);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus('error', `❌ Error: ${error.message}`);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '🎯 Train Model';
+            }
+        });
+        
+        function showStatus(type, message) {
+            const statusDiv = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            
+            statusDiv.className = `status ${type} show`;
+            statusText.innerHTML = message;
+        }
+        
+        function displayResults(result) {
+            const resultsDiv = document.getElementById('results');
+            const metricsGrid = document.getElementById('metricsGrid');
+            const visualization = document.getElementById('visualization');
+            const downloadSection = document.getElementById('downloadSection');
+            const rawResponse = document.getElementById('rawResponse');
+            
+            resultsDiv.classList.add('show');
+            
+            // Display metrics
+            const metrics = [
+                { label: 'Test Accuracy', value: (result.accuracy * 100).toFixed(2) + '%' },
+                { label: 'Precision', value: (result.precision * 100).toFixed(2) + '%' },
+                { label: 'Recall', value: (result.recall * 100).toFixed(2) + '%' },
+                { label: 'F1-Score', value: (result.f1_score * 100).toFixed(2) + '%' },
+                { label: 'CV Mean', value: (result.cv_mean * 100).toFixed(2) + '%' },
+                { label: 'CV Std', value: (result.cv_std * 100).toFixed(3) + '%' },
+            ];
+            
+            metricsGrid.innerHTML = metrics.map(m => `
+                <div class="metric-card">
+                    <div class="metric-label">${m.label}</div>
+                    <div class="metric-value">${m.value}</div>
+                </div>
+            `).join('');
+            
+            // Display visualization if available
+            if (result.visualization_base64) {
+                visualization.innerHTML = `
+                    <h3 style="color: #333; margin-bottom: 15px;">Training Visualization</h3>
+                    <img src="data:image/png;base64,${result.visualization_base64}" alt="Training Visualization">
+                `;
+            }
+            
+            // Display download links
+            if (result.model_files && result.model_files.length > 0) {
+                downloadSection.innerHTML = `
+                    <h3 style="color: #333; margin-top: 30px; margin-bottom: 15px;">📥 Download Model Files</h3>
+                    ${result.model_files.map(file => `
+                        <a href="${API_URL}/api/download/${file}" class="download-link" download>
+                            ⬇️ ${file}
+                        </a>
+                    `).join(' ')}
+                `;
+            }
+            
+            // Show raw response
+            rawResponse.textContent = JSON.stringify(result, null, 2);
+        }
+    </script>
+</body>
+</html>
+

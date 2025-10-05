@@ -19,6 +19,13 @@ from datetime import datetime
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
+# Import RAG system
+try:
+    from rag_system import ExoplanetRAG, create_exoplanet_knowledge_base, DEPENDENCIES_AVAILABLE as RAG_AVAILABLE
+except ImportError:
+    RAG_AVAILABLE = False
+    print("⚠️  RAG system not available. Install dependencies: pip install google-generativeai sentence-transformers faiss-cpu")
+
 warnings.filterwarnings('ignore')
 
 DATA_PATH = Path("data/koi_with_relative_location.csv")
@@ -114,10 +121,10 @@ df = load_data_from_mongodb()
 if df is None:
     print("📊 Loading data from CSV...")
             
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(
-            f"{DATA_PATH} not found – run fetch.py first to create it."
-        )
+if not DATA_PATH.exists():
+    raise FileNotFoundError(
+        f"{DATA_PATH} not found – run fetch.py first to create it."
+    )
 
 df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} rows from CSV")
@@ -570,13 +577,15 @@ app = FastAPI(
     version="3.0.0",
 )
 
-# Enable CORS for all origins
+# Enable CORS for all origins (including file uploads)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers (including Content-Type, Authorization, etc.)
+    expose_headers=["*"],  # Expose all headers to client
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # helper – convert dataframe to list of dictionaries efficiently
@@ -793,9 +802,16 @@ def root():
             "/api/train": "Train custom model with uploaded data (POST)",
             "/api/latest-visualization": "Get latest training visualization as base64",
             "/api/download/{filename}": "Download trained model files",
+            "/api/rag/ask": "Ask questions about exoplanets using AI (POST)",
+            "/api/rag/status": "Get RAG system status",
+            "/api/rag/rebuild": "Rebuild RAG knowledge base (POST)",
+            "/api/rag/upload-pdf": "Upload PDF document to knowledge base (POST)",
+            "/api/rag/documents": "List all documents in RAG index",
             "/model/status": "Get model status and information",
             "/stats": "Get dataset statistics and model accuracy"
-        }
+        },
+        "rag_available": RAG_AVAILABLE,
+        "rag_status_url": "/api/rag/status"
     }
 
 @app.get("/planets", response_model=List[dict])
@@ -904,7 +920,7 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-        rows = subset.iloc[skip : skip + limit]
+    rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
@@ -1571,6 +1587,317 @@ def get_latest_training_visualization():
         raise HTTPException(
             status_code=500,
             detail=f"Error loading visualization: {str(e)}"
+        )
+
+
+# -------- RAG System Initialization and Endpoints --------
+
+# Initialize RAG system (lazy loading)
+rag_system = None
+rag_index_path = Path("rag_index")
+
+def get_rag_system():
+    """Get or initialize RAG system"""
+    global rag_system
+    
+    if not RAG_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="RAG system not available. Install dependencies: pip install google-generativeai sentence-transformers faiss-cpu"
+        )
+    
+    if rag_system is None:
+        # Get API key from environment
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="Gemini API key not configured. Set GEMINI_API_KEY environment variable. Get your key at: https://aistudio.google.com/app/apikey"
+            )
+        
+        # Initialize RAG
+        rag_system = ExoplanetRAG(api_key=api_key)
+        
+        # Try to load existing index
+        if rag_index_path.exists():
+            try:
+                rag_system.load_index(str(rag_index_path))
+                print("✅ Loaded existing RAG index")
+            except Exception as e:
+                print(f"⚠️  Could not load RAG index: {e}")
+                print("   Building new index...")
+                create_exoplanet_knowledge_base(df, rag_system)
+                rag_system.save_index(str(rag_index_path))
+        else:
+            # Build knowledge base from scratch
+            print("📚 Building RAG knowledge base...")
+            create_exoplanet_knowledge_base(df, rag_system)
+            rag_system.save_index(str(rag_index_path))
+    
+    return rag_system
+
+
+@app.post("/api/rag/ask")
+def ask_rag_question(
+    question: str = Form(..., description="Question about exoplanets"),
+    top_k: int = Form(5, description="Number of source documents to retrieve"),
+    temperature: float = Form(0.7, description="Response creativity (0.0-1.0)"),
+    include_sources: bool = Form(False, description="Include source documents in response")
+):
+    """
+    Ask a question about exoplanets using RAG (Retrieval-Augmented Generation).
+    
+    Uses Google Gemini 2.0 Flash with vector search over exoplanet knowledge base.
+    
+    **Parameters:**
+    - **question**: Your question about exoplanets
+    - **top_k**: Number of relevant documents to retrieve for context (default: 5)
+    - **temperature**: Response creativity 0.0 (factual) to 1.0 (creative) (default: 0.7)
+    - **include_sources**: Include retrieved source documents in response
+    
+    **Returns:**
+    - AI-generated answer
+    - Number of sources used
+    - Source documents (if requested)
+    
+    **Example:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/rag/ask" \\
+      -F "question=How many exoplanets has Kepler discovered?" \\
+      -F "top_k=5" \\
+      -F "temperature=0.7"
+    ```
+    """
+    
+    try:
+        rag = get_rag_system()
+        result = rag.ask(
+            question,
+            top_k=top_k,
+            temperature=temperature,
+            include_sources=include_sources
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing question: {str(e)}"
+        )
+
+
+@app.get("/api/rag/status")
+def rag_status():
+    """
+    Get RAG system status.
+    
+    **Returns:**
+    - RAG availability
+    - Index status
+    - Number of indexed documents
+    - Gemini API status
+    """
+    
+    status = {
+        "rag_available": RAG_AVAILABLE,
+        "gemini_api_key_set": bool(os.getenv("GEMINI_API_KEY")),
+        "index_exists": rag_index_path.exists(),
+        "rag_initialized": rag_system is not None,
+    }
+    
+    if rag_system is not None:
+        status["indexed_documents"] = len(rag_system.documents)
+        status["model_name"] = rag_system.model_name
+    
+    return status
+
+
+@app.post("/api/rag/rebuild")
+def rebuild_rag_index():
+    """
+    Rebuild RAG knowledge base from current data.
+    
+    Use this after updating the exoplanet dataset to refresh the RAG index.
+    
+    **Returns:**
+    - Status message
+    - Number of documents indexed
+    """
+    
+    try:
+        rag = get_rag_system()
+        
+        print("🔄 Rebuilding RAG knowledge base...")
+        create_exoplanet_knowledge_base(df, rag)
+        rag.save_index(str(rag_index_path))
+        
+        return {
+            "status": "success",
+            "message": "RAG index rebuilt successfully",
+            "indexed_documents": len(rag.documents),
+            "index_path": str(rag_index_path)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error rebuilding index: {str(e)}"
+        )
+
+
+@app.post("/api/rag/upload-pdf")
+async def upload_pdf_to_rag(
+    pdf_file: UploadFile = File(..., description="PDF file to add to knowledge base"),
+    chunk_size: int = Form(1000, description="Characters per chunk"),
+    overlap: int = Form(200, description="Overlapping characters between chunks")
+):
+    """
+    Upload a PDF document to the RAG knowledge base.
+    
+    The PDF will be:
+    1. Text extracted
+    2. Split into chunks with overlap
+    3. Added to the vector index
+    4. Made searchable for questions
+    
+    **Parameters:**
+    - **pdf_file**: PDF file to upload
+    - **chunk_size**: Maximum characters per chunk (default: 1000)
+    - **overlap**: Overlapping characters between chunks (default: 200)
+    
+    **Returns:**
+    - Success status
+    - Number of chunks created
+    - Total documents in index
+    - Filename
+    
+    **Example:**
+    ```bash
+    curl -X POST "http://localhost:8000/api/rag/upload-pdf" \\
+      -F "pdf_file=@research_paper.pdf" \\
+      -F "chunk_size=1000" \\
+      -F "overlap=200"
+    ```
+    """
+    
+    # Validate file type
+    if not pdf_file.filename.lower().endswith('.pdf'):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be a PDF (.pdf extension required)"
+        )
+    
+    try:
+        rag = get_rag_system()
+        
+        # Read file content
+        contents = await pdf_file.read()
+        
+        # Create BytesIO object for PDF processing
+        from io import BytesIO
+        pdf_stream = BytesIO(contents)
+        
+        # Index the PDF
+        num_chunks = rag.index_pdf(
+            pdf_stream,
+            filename=pdf_file.filename,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            metadata={
+                'source': 'upload',
+                'upload_date': datetime.now().isoformat()
+            }
+        )
+        
+        # Save updated index
+        rag.save_index(str(rag_index_path))
+        
+        return {
+            "status": "success",
+            "message": f"PDF indexed successfully",
+            "filename": pdf_file.filename,
+            "chunks_created": num_chunks,
+            "total_documents": len(rag.documents),
+            "index_path": str(rag_index_path)
+        }
+        
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"PDF processing not available: {str(e)}. Install: pip install pypdf2 pdfplumber"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing PDF: {str(e)}"
+        )
+
+
+@app.get("/api/rag/documents")
+def list_rag_documents():
+    """
+    List all documents in the RAG index.
+    
+    **Returns:**
+    - List of documents with metadata
+    - Statistics by document type
+    """
+    
+    try:
+        rag = get_rag_system()
+        
+        # Group by type and filename
+        doc_stats = {}
+        pdf_docs = []
+        
+        for i, (doc, meta) in enumerate(zip(rag.documents, rag.document_metadata)):
+            doc_type = meta.get('type', 'unknown')
+            
+            if doc_type not in doc_stats:
+                doc_stats[doc_type] = 0
+            doc_stats[doc_type] += 1
+            
+            # Collect PDF document info
+            if doc_type == 'pdf':
+                filename = meta.get('filename')
+                if filename:
+                    pdf_info = {
+                        'filename': filename,
+                        'chunk_index': meta.get('chunk_index', 0),
+                        'total_chunks': meta.get('total_chunks', 1),
+                        'upload_date': meta.get('upload_date'),
+                    }
+                    if pdf_info not in pdf_docs:
+                        pdf_docs.append(pdf_info)
+        
+        # Group PDF chunks by filename
+        pdf_files = {}
+        for doc in pdf_docs:
+            filename = doc['filename']
+            if filename not in pdf_files:
+                pdf_files[filename] = {
+                    'filename': filename,
+                    'total_chunks': doc['total_chunks'],
+                    'upload_date': doc['upload_date']
+                }
+        
+        return {
+            "total_documents": len(rag.documents),
+            "document_types": doc_stats,
+            "pdf_files": list(pdf_files.values()),
+            "pdf_count": len(pdf_files)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing documents: {str(e)}"
         )
 
 
