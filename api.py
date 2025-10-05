@@ -1351,11 +1351,15 @@ async def train_custom_model(
             import numpy as np
             from xgboost import XGBClassifier
             
+            # Convert pandas Series to numpy arrays if needed
+            y_train_arr = y_train.values if hasattr(y_train, 'values') else np.array(y_train)
+            y_val_arr = y_val.values if hasattr(y_val, 'values') else np.array(y_val)
+            
             # Encode labels
             print("1. Encoding target labels...")
             predictor.label_encoder = LabelEncoder()
-            y_train_encoded = predictor.label_encoder.fit_transform(y_train)
-            y_val_encoded = predictor.label_encoder.transform(y_val)
+            y_train_encoded = predictor.label_encoder.fit_transform(y_train_arr)
+            y_val_encoded = predictor.label_encoder.transform(y_val_arr)
             
             print(f"   - Classes: {predictor.label_encoder.classes_}")
             
@@ -1414,12 +1418,17 @@ async def train_custom_model(
         # Use the preprocessed data for cross-validation
         import numpy as np
         X_combined = np.vstack([X_train_scaled, X_val_scaled, X_test_scaled])
-        y_combined = np.concatenate([y_train, y_val, y_test])
+        # Convert pandas Series to numpy arrays if needed
+        y_train_arr = y_train.values if hasattr(y_train, 'values') else np.array(y_train)
+        y_val_arr = y_val.values if hasattr(y_val, 'values') else np.array(y_val)
+        y_test_arr = y_test.values if hasattr(y_test, 'values') else np.array(y_test)
+        y_combined = np.concatenate([y_train_arr, y_val_arr, y_test_arr])
         cv_results = predictor.cross_validate_model(X_combined, y_combined)
         
         # Evaluate on test set
         print("\n📈 Evaluating on test set...")
-        y_test_encoded = predictor.label_encoder.transform(y_test)
+        y_test_arr = y_test.values if hasattr(y_test, 'values') else np.array(y_test)
+        y_test_encoded = predictor.label_encoder.transform(y_test_arr)
         y_pred = predictor.model.predict(X_test_scaled)
         y_pred_proba = predictor.model.predict_proba(X_test_scaled)
         
