@@ -1318,9 +1318,6 @@ async def train_custom_model(
         # Initialize predictor
         predictor = KOIDispositionPredictor(config)
         
-        # Override model parameters with custom hyperparameters
-        predictor.model_params.update(config['xgb_params'])
-        
         # Run preprocessing - pass the dataframe directly
         print("\n📋 Preprocessing data...")
         X, y = predictor.preprocess_data(training_df)
@@ -1345,9 +1342,65 @@ async def train_custom_model(
             X_train, X_val, X_test
         )
         
-        # Train model
+        # Train model with custom hyperparameters
         print("\n🚀 Training model with custom hyperparameters...")
-        y_val_encoded = predictor.train_model(X_train_scaled, y_train, X_val_scaled, y_val)
+        
+        # Create custom training method
+        def train_with_custom_params(X_train, y_train, X_val, y_val, xgb_params):
+            from sklearn.preprocessing import LabelEncoder
+            import numpy as np
+            from xgboost import XGBClassifier
+            
+            # Encode labels
+            print("1. Encoding target labels...")
+            predictor.label_encoder = LabelEncoder()
+            y_train_encoded = predictor.label_encoder.fit_transform(y_train)
+            y_val_encoded = predictor.label_encoder.transform(y_val)
+            
+            print(f"   - Classes: {predictor.label_encoder.classes_}")
+            
+            # Calculate class weights
+            from sklearn.utils.class_weight import compute_class_weight
+            classes = np.unique(y_train_encoded)
+            class_weights = compute_class_weight(
+                'balanced', classes=classes, y=y_train_encoded
+            )
+            class_weights_dict = {int(cls): weight for cls, weight in zip(classes, class_weights)}
+            
+            # Calculate sample weights
+            sample_weights = np.array([class_weights_dict[int(label)] for label in y_train_encoded])
+            
+            # Update xgb_params with required fields
+            xgb_params.update({
+                'objective': 'multi:softprob',
+                'num_class': len(predictor.label_encoder.classes_),
+                'eval_metric': 'mlogloss',
+                'random_state': config['random_state'],
+                'n_jobs': -1
+            })
+            
+            print(f"\n2. Training XGBoost model with custom parameters...")
+            for key, value in xgb_params.items():
+                if key not in ['n_jobs', 'random_state']:
+                    print(f"   - {key}: {value}")
+            
+            # Train model
+            predictor.model = XGBClassifier(**xgb_params)
+            
+            eval_set = [(X_train, y_train_encoded), (X_val, y_val_encoded)]
+            predictor.model.fit(
+                X_train, 
+                y_train_encoded,
+                sample_weight=sample_weights,
+                eval_set=eval_set,
+                verbose=False
+            )
+            
+            return y_val_encoded
+        
+        y_val_encoded = train_with_custom_params(
+            X_train_scaled, y_train, X_val_scaled, y_val, config['xgb_params']
+        )
         
         # Cross-validation
         print("\n📊 Cross-validation...")
