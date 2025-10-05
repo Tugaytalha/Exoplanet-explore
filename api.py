@@ -1500,7 +1500,18 @@ async def train_custom_model(
         # Save model
         print("\n💾 Saving model...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        saved_paths = predictor.save_model_artifacts(timestamp)
+        
+        # Prepare results dictionary for saving
+        results = {
+            'test_accuracy': test_accuracy,
+            'test_precision': precision,
+            'test_recall': recall,
+            'test_f1': f1,
+            'confusion_matrix': cm,
+            'classification_report': report
+        }
+        
+        saved_paths = predictor.save_model_artifacts(results, cv_results)
         
         # Model download path
         model_filename = saved_paths['model'].split('/')[-1]

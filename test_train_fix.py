@@ -56,6 +56,7 @@ def test_train_endpoint():
             print("   ✅ Feature importance calculation added")
             print("   ✅ Visualization generation working")
             print("   ✅ Model saving method fixed")
+            print("   ✅ Model saving arguments fixed")
         else:
             print(f"❌ Error: {response.status_code}")
             print(f"Response: {response.text}")
