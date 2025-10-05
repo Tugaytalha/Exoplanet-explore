@@ -1477,10 +1477,11 @@ async def train_custom_model(
         axes[1, 0].tick_params(axis='x', rotation=45)
         
         # 4. Cross-Validation Scores
-        cv_scores = cv_results['fold_scores']
+        cv_scores = cv_results  # cv_results is already a list of scores
+        mean_cv_score = np.mean(cv_scores)
         axes[1, 1].plot(range(1, len(cv_scores) + 1), cv_scores, marker='o')
-        axes[1, 1].axhline(y=cv_results['mean_score'], color='r', linestyle='--', 
-                          label=f"Mean: {cv_results['mean_score']:.4f}")
+        axes[1, 1].axhline(y=mean_cv_score, color='r', linestyle='--', 
+                          label=f"Mean: {mean_cv_score:.4f}")
         axes[1, 1].set_xlabel('Fold')
         axes[1, 1].set_ylabel('Accuracy')
         axes[1, 1].set_title('Cross-Validation Scores')
@@ -1508,7 +1509,7 @@ async def train_custom_model(
         print(f"✅ TRAINING COMPLETE")
         print(f"{'='*70}")
         print(f"Test Accuracy: {test_accuracy:.4f}")
-        print(f"CV Mean: {cv_results['mean_score']:.4f}")
+        print(f"CV Mean: {np.mean(cv_results):.4f}")
         
         return {
             "status": "success",
@@ -1543,9 +1544,9 @@ async def train_custom_model(
                 "test_precision": float(precision),
                 "test_recall": float(recall),
                 "test_f1": float(f1),
-                "cv_mean": float(cv_results['mean_score']),
-                "cv_std": float(cv_results['std_score']),
-                "cv_scores": [float(s) for s in cv_results['fold_scores']]
+                "cv_mean": float(np.mean(cv_results)),
+                "cv_std": float(np.std(cv_results)),
+                "cv_scores": [float(s) for s in cv_results]
             },
             "classification_report": report,
             "confusion_matrix": cm.tolist(),

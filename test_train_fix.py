@@ -51,7 +51,10 @@ def test_train_endpoint():
                 for key, value in result['hyperparameters_used'].items():
                     print(f"   {key}: {value}")
                     
-            print("\n🎉 Cross-validation and feature importance fixes are working correctly!")
+            print("\n🎉 All training fixes are working correctly!")
+            print("   ✅ Cross-validation data type fixed")
+            print("   ✅ Feature importance calculation added")
+            print("   ✅ Visualization generation working")
         else:
             print(f"❌ Error: {response.status_code}")
             print(f"Response: {response.text}")
