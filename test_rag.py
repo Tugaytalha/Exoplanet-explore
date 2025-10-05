@@ -95,10 +95,10 @@ def main():
     print("="*80)
     print("\n✨ RAG system is working! You can now:")
     print("   1. Start the API: uvicorn api:app --reload")
-    print("   2. Ask questions via POST /api/rag/ask")
-    print("   3. Check status via GET /api/rag/status")
+    print("   2. Ask questions via POST /rag/ask")
+    print("   3. Check status via GET /rag/status")
     print("\nExample:")
-    print('   curl -X POST "http://localhost:8000/api/rag/ask" \\')
+    print('   curl -X POST "http://localhost:8000/rag/ask" \\')
     print('     -F "question=How many exoplanets has Kepler discovered?"')
 
 

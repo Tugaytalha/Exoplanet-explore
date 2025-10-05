@@ -797,21 +797,21 @@ def root():
         "endpoints": {
             "/planets": "List all KOIs with ML predictions",
             "/planets/{kepid}": "Get specific KOI by Kepler ID",
-            "/api/features": "Get list of required features for prediction",
-            "/api/predict": "Predict disposition from feature values (POST)",
-            "/api/train": "Train custom model with uploaded data (POST)",
-            "/api/latest-visualization": "Get latest training visualization as base64",
-            "/api/download/{filename}": "Download trained model files",
-            "/api/rag/ask": "Ask questions about exoplanets using AI (POST)",
-            "/api/rag/status": "Get RAG system status",
-            "/api/rag/rebuild": "Rebuild RAG knowledge base (POST)",
-            "/api/rag/upload-pdf": "Upload PDF document to knowledge base (POST)",
-            "/api/rag/documents": "List all documents in RAG index",
+            "/features": "Get list of required features for prediction",
+            "/predict": "Predict disposition from feature values (POST)",
+            "/train": "Train custom model with uploaded data (POST)",
+            "/latest-visualization": "Get latest training visualization as base64",
+            "/download/{filename}": "Download trained model files",
+            "/rag/ask": "Ask questions about exoplanets using AI (POST)",
+            "/rag/status": "Get RAG system status",
+            "/rag/rebuild": "Rebuild RAG knowledge base (POST)",
+            "/rag/upload-pdf": "Upload PDF document to knowledge base (POST)",
+            "/rag/documents": "List all documents in RAG index",
             "/model/status": "Get model status and information",
             "/stats": "Get dataset statistics and model accuracy"
         },
         "rag_available": RAG_AVAILABLE,
-        "rag_status_url": "/api/rag/status"
+        "rag_status_url": "/rag/status"
     }
 
 @app.get("/planets", response_model=List[dict])
@@ -1014,7 +1014,7 @@ def model_status():
     }
 
 
-@app.get("/api/features")
+@app.get("/features")
 def get_required_features():
     """
     Get the list of features required for prediction.
@@ -1039,7 +1039,7 @@ def get_required_features():
     }
 
 
-@app.post("/api/predict")
+@app.post("/predict")
 def predict_disposition(features: dict):
     """
     Predict KOI disposition from input features.
@@ -1146,7 +1146,7 @@ def predict_disposition(features: dict):
         )
 
 
-@app.post("/api/train")
+@app.post("/train")
 async def train_custom_model(
     training_file: UploadFile = File(..., description="CSV file with training data"),
     use_existing_data: bool = Form(default=True, description="Combine with existing data (True) or use only uploaded data (False)"),
@@ -1317,6 +1317,9 @@ async def train_custom_model(
         
         # Initialize predictor
         predictor = KOIDispositionPredictor(config)
+        
+        # Override model parameters with custom hyperparameters
+        predictor.model_params.update(config['xgb_params'])
         
         # Run preprocessing - pass the dataframe directly
         print("\n📋 Preprocessing data...")
@@ -1541,7 +1544,7 @@ async def train_custom_model(
             "feature_importance": top_features,
             "model_files": {
                 "model": model_filename,
-                "download_url": f"/api/download/{model_filename}",
+                "download_url": f"/download/{model_filename}",
                 "scaler": saved_paths['scaler'].split('/')[-1],
                 "label_encoder": saved_paths['label_encoder'].split('/')[-1],
                 "feature_names": saved_paths['feature_names'].split('/')[-1]
@@ -1561,7 +1564,7 @@ async def train_custom_model(
         )
 
 
-@app.get("/api/download/{filename}")
+@app.get("/download/{filename}")
 def download_model_file(filename: str):
     """
     Download trained model files.
@@ -1588,7 +1591,7 @@ def download_model_file(filename: str):
     )
 
 
-@app.get("/api/latest-visualization")
+@app.get("/latest-visualization")
 def get_latest_training_visualization():
     """
     Get the latest training visualization plot as base64 encoded PNG with evaluation metrics.
@@ -1798,7 +1801,7 @@ def get_rag_system():
     return rag_system
 
 
-@app.post("/api/rag/ask")
+@app.post("/rag/ask")
 def ask_rag_question(
     question: str = Form(..., description="Question about exoplanets"),
     top_k: int = Form(5, description="Number of source documents to retrieve"),
@@ -1848,7 +1851,7 @@ def ask_rag_question(
         )
 
 
-@app.get("/api/rag/status")
+@app.get("/rag/status")
 def rag_status():
     """
     Get RAG system status.
@@ -1874,7 +1877,7 @@ def rag_status():
     return status
 
 
-@app.post("/api/rag/rebuild")
+@app.post("/rag/rebuild")
 def rebuild_rag_index():
     """
     Rebuild RAG knowledge base from current data.
@@ -1908,7 +1911,7 @@ def rebuild_rag_index():
         )
 
 
-@app.post("/api/rag/upload-pdf")
+@app.post("/rag/upload-pdf")
 async def upload_pdf_to_rag(
     pdf_file: UploadFile = File(..., description="PDF file to add to knowledge base"),
     chunk_size: int = Form(1000, description="Characters per chunk"),
@@ -1998,7 +2001,7 @@ async def upload_pdf_to_rag(
         )
 
 
-@app.get("/api/rag/documents")
+@app.get("/rag/documents")
 def list_rag_documents():
     """
     List all documents in the RAG index.

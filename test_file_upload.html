@@ -339,7 +339,7 @@
             statusText.innerHTML += '<div class="spinner"></div>';
             
             try {
-                const response = await fetch(`${API_URL}/api/train`, {
+                const response = await fetch(`${API_URL}/train`, {
                     method: 'POST',
                     body: formData,
                 });
@@ -413,7 +413,7 @@
                 downloadSection.innerHTML = `
                     <h3 style="color: #333; margin-top: 30px; margin-bottom: 15px;">📥 Download Model Files</h3>
                     ${result.model_files.map(file => `
-                        <a href="${API_URL}/api/download/${file}" class="download-link" download>
+                        <a href="${API_URL}/download/${file}" class="download-link" download>
                             ⬇️ ${file}
                         </a>
                     `).join(' ')}

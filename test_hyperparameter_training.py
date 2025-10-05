@@ -7,9 +7,9 @@ import requests
 import json
 
 def test_hyperparameter_training():
-    """Test the /api/train endpoint with custom hyperparameters"""
+    """Test the /train endpoint with custom hyperparameters"""
     
-    url = "http://localhost:8000/api/train"
+    url = "http://localhost:8000/train"
     
     # Test data - using the existing CSV file
     files = {

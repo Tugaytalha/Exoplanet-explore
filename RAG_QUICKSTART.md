@@ -31,12 +31,12 @@ uvicorn api:app --reload
 
 ### Check Status
 ```bash
-curl http://localhost:8000/api/rag/status
+curl http://localhost:8000/rag/status
 ```
 
 ### Ask a Question
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=How many exoplanets has Kepler discovered?"
 ```
 
@@ -45,7 +45,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 import requests
 
 response = requests.post(
-    'http://localhost:8000/api/rag/ask',
+    'http://localhost:8000/rag/ask',
     data={'question': 'What is the habitable zone?'}
 )
 
@@ -57,7 +57,7 @@ print(response.json()['answer'])
 const formData = new FormData();
 formData.append('question', 'How does Kepler detect planets?');
 
-fetch('http://localhost:8000/api/rag/ask', {
+fetch('http://localhost:8000/rag/ask', {
   method: 'POST',
   body: formData
 })
@@ -71,15 +71,15 @@ fetch('http://localhost:8000/api/rag/ask', {
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/rag/ask` | POST | Ask a question |
-| `/api/rag/status` | GET | Check RAG status |
-| `/api/rag/rebuild` | POST | Rebuild index |
+| `/rag/ask` | POST | Ask a question |
+| `/rag/status` | GET | Check RAG status |
+| `/rag/rebuild` | POST | Rebuild index |
 
 ---
 
 ## Parameters
 
-**POST /api/rag/ask**
+**POST /rag/ask**
 - `question` (required): Your question
 - `top_k` (optional, default=5): Number of sources
 - `temperature` (optional, default=0.7): Creativity (0.0-1.0)
@@ -115,7 +115,7 @@ export GEMINI_API_KEY="your-key-here"
 ### "Index not found"
 The index is built automatically on first use. Or:
 ```bash
-curl -X POST http://localhost:8000/api/rag/rebuild
+curl -X POST http://localhost:8000/rag/rebuild
 ```
 
 ---
@@ -164,7 +164,7 @@ See `RAG_GUIDE.md` for complete documentation including:
 
 **Need Help?**
 - API Docs: http://localhost:8000/docs
-- Status Check: http://localhost:8000/api/rag/status
+- Status Check: http://localhost:8000/rag/status
 - Full Guide: RAG_GUIDE.md
 
 Happy exploring! 🌌✨

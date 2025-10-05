@@ -80,7 +80,7 @@ uvicorn api:app --reload
 ### 5. Check RAG Status
 
 ```bash
-curl http://localhost:8000/api/rag/status
+curl http://localhost:8000/rag/status
 ```
 
 **Response:**
@@ -101,7 +101,7 @@ curl http://localhost:8000/api/rag/status
 ### Using cURL
 
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=How many exoplanets has Kepler discovered?" \
   -F "top_k=5" \
   -F "temperature=0.7"
@@ -113,7 +113,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 import requests
 
 response = requests.post(
-    'http://localhost:8000/api/rag/ask',
+    'http://localhost:8000/rag/ask',
     data={
         'question': 'How many exoplanets has Kepler discovered?',
         'top_k': 5,
@@ -136,7 +136,7 @@ formData.append('question', 'What is the habitable zone?');
 formData.append('top_k', '5');
 formData.append('temperature', '0.7');
 
-fetch('http://localhost:8000/api/rag/ask', {
+fetch('http://localhost:8000/rag/ask', {
   method: 'POST',
   body: formData
 })
@@ -188,7 +188,7 @@ Useful for:
 
 ### General Statistics
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=How many KOIs are there in total?"
 ```
 
@@ -196,7 +196,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 
 ### Scientific Concepts
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=What is the transit method?"
 ```
 
@@ -204,7 +204,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 
 ### Data Analysis
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=What percentage of planets are Earth-sized?"
 ```
 
@@ -212,7 +212,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 
 ### Multi-Planet Systems
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=Which systems have the most planets?"
 ```
 
@@ -220,7 +220,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 
 ### Habitability
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=How many potentially habitable planets are there?"
 ```
 
@@ -234,7 +234,7 @@ curl -X POST "http://localhost:8000/api/rag/ask" \
 
 ```python
 response = requests.post(
-    'http://localhost:8000/api/rag/ask',
+    'http://localhost:8000/rag/ask',
     data={
         'question': 'What are the different planet size categories?',
         'include_sources': True
@@ -263,7 +263,7 @@ questions = [
 
 for q in questions:
     response = requests.post(
-        'http://localhost:8000/api/rag/ask',
+        'http://localhost:8000/rag/ask',
         data={'question': q, 'temperature': 0.5}
     )
     result = response.json()
@@ -276,13 +276,13 @@ for q in questions:
 
 ```python
 # Factual answers (low temperature)
-factual = requests.post('http://localhost:8000/api/rag/ask', data={
+factual = requests.post('http://localhost:8000/rag/ask', data={
     'question': 'How many confirmed planets are there?',
     'temperature': 0.2
 }).json()
 
 # Exploratory answers (higher temperature)
-exploratory = requests.post('http://localhost:8000/api/rag/ask', data={
+exploratory = requests.post('http://localhost:8000/rag/ask', data={
     'question': 'What makes an exoplanet interesting?',
     'temperature': 0.9
 }).json()
@@ -295,7 +295,7 @@ exploratory = requests.post('http://localhost:8000/api/rag/ask', data={
 ### Check Status
 
 ```bash
-curl http://localhost:8000/api/rag/status
+curl http://localhost:8000/rag/status
 ```
 
 ### Rebuild Index
@@ -303,7 +303,7 @@ curl http://localhost:8000/api/rag/status
 Rebuild the RAG index after updating your dataset:
 
 ```bash
-curl -X POST http://localhost:8000/api/rag/rebuild
+curl -X POST http://localhost:8000/rag/rebuild
 ```
 
 **Response:**
@@ -367,7 +367,7 @@ function ExoplanetAI() {
     formData.append('question', question);
     formData.append('temperature', '0.7');
     
-    const response = await fetch('http://localhost:8000/api/rag/ask', {
+    const response = await fetch('http://localhost:8000/rag/ask', {
       method: 'POST',
       body: formData
     });
@@ -436,7 +436,7 @@ function ExoplanetAI() {
             formData.append('question', question);
             formData.append('temperature', '0.7');
             
-            const response = await fetch('http://localhost:8000/api/rag/ask', {
+            const response = await fetch('http://localhost:8000/rag/ask', {
                 method: 'POST',
                 body: formData
             });
@@ -484,7 +484,7 @@ Get your key at: https://aistudio.google.com/app/apikey
 **Solution:**
 The index is built automatically on first use. Or manually rebuild:
 ```bash
-curl -X POST http://localhost:8000/api/rag/rebuild
+curl -X POST http://localhost:8000/rag/rebuild
 ```
 
 ### Slow Responses
@@ -519,7 +519,7 @@ curl -X POST http://localhost:8000/api/rag/rebuild
 Build index once, reuse many times:
 ```python
 # Build during deployment
-curl -X POST http://localhost:8000/api/rag/rebuild
+curl -X POST http://localhost:8000/rag/rebuild
 
 # Reuse for all queries (fast!)
 ```
@@ -545,7 +545,7 @@ def ask_with_cache(question):
     if question in cache:
         return cache[question]
     
-    response = requests.post('http://localhost:8000/api/rag/ask',
+    response = requests.post('http://localhost:8000/rag/ask',
                            data={'question': question})
     result = response.json()
     cache[question] = result
@@ -579,7 +579,7 @@ from slowapi.util import get_remote_address
 
 limiter = Limiter(key_func=get_remote_address)
 
-@app.post("/api/rag/ask")
+@app.post("/rag/ask")
 @limiter.limit("10/minute")
 async def ask_rag_question(request: Request, ...):
     ...
@@ -615,11 +615,11 @@ if not question.strip():
 1. **Get your API key** from Google AI Studio
 2. **Install dependencies** with pip
 3. **Set environment variable** with your key
-4. **Start the API** and test with `/api/rag/status`
+4. **Start the API** and test with `/rag/status`
 5. **Ask your first question!**
 
 ```bash
-curl -X POST "http://localhost:8000/api/rag/ask" \
+curl -X POST "http://localhost:8000/rag/ask" \
   -F "question=Tell me about exoplanets!"
 ```
 

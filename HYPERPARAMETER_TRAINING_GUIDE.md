@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `/api/train` endpoint now supports **custom hyperparameters** for XGBoost model training. This allows you to fine-tune the model for better performance on your specific dataset.
+The `/train` endpoint now supports **custom hyperparameters** for XGBoost model training. This allows you to fine-tune the model for better performance on your specific dataset.
 
 ---
 
@@ -11,7 +11,7 @@ The `/api/train` endpoint now supports **custom hyperparameters** for XGBoost mo
 ### Basic Training (Default Hyperparameters)
 
 ```bash
-curl -X POST "http://localhost:8000/api/train" \
+curl -X POST "http://localhost:8000/train" \
   -F "training_file=@my_data.csv" \
   -F "model_name=my_model"
 ```
@@ -19,7 +19,7 @@ curl -X POST "http://localhost:8000/api/train" \
 ### Training with Custom Hyperparameters
 
 ```bash
-curl -X POST "http://localhost:8000/api/train" \
+curl -X POST "http://localhost:8000/train" \
   -F "training_file=@my_data.csv" \
   -F "model_name=tuned_model" \
   -F "max_depth=8" \
@@ -229,7 +229,7 @@ Control model complexity penalty.
 ### Example 1: Quick Baseline
 
 ```bash
-curl -X POST "http://localhost:8000/api/train" \
+curl -X POST "http://localhost:8000/train" \
   -F "training_file=@data.csv" \
   -F "model_name=baseline" \
   -F "n_estimators=200" \
@@ -240,7 +240,7 @@ curl -X POST "http://localhost:8000/api/train" \
 ### Example 2: Production Model (High Accuracy)
 
 ```bash
-curl -X POST "http://localhost:8000/api/train" \
+curl -X POST "http://localhost:8000/train" \
   -F "training_file=@data.csv" \
   -F "model_name=production" \
   -F "max_depth=7" \
@@ -257,7 +257,7 @@ curl -X POST "http://localhost:8000/api/train" \
 ### Example 3: Regularized Model (Prevent Overfitting)
 
 ```bash
-curl -X POST "http://localhost:8000/api/train" \
+curl -X POST "http://localhost:8000/train" \
   -F "training_file=@data.csv" \
   -F "model_name=regularized" \
   -F "max_depth=5" \
@@ -272,7 +272,7 @@ curl -X POST "http://localhost:8000/api/train" \
 ### Example 4: Complex Model (Large Dataset)
 
 ```bash
-curl -X POST "http://localhost:8000/api/train" \
+curl -X POST "http://localhost:8000/train" \
   -F "training_file=@large_data.csv" \
   -F "model_name=complex" \
   -F "max_depth=9" \
@@ -316,7 +316,7 @@ hyperparameters = {
 
 # Train model
 response = requests.post(
-    'http://localhost:8000/api/train',
+    'http://localhost:8000/train',
     files={'training_file': hyperparameters.pop('training_file')},
     data=hyperparameters
 )
@@ -428,7 +428,7 @@ for max_depth, learning_rate, n_estimators in itertools.product(
     print(f"Testing: max_depth={max_depth}, lr={learning_rate}, n_est={n_estimators}")
     
     response = requests.post(
-        'http://localhost:8000/api/train',
+        'http://localhost:8000/train',
         files={'training_file': open('data.csv', 'rb')},
         data={
             'model_name': f'grid_d{max_depth}_lr{learning_rate}_n{n_estimators}',
