@@ -1150,31 +1150,98 @@ def predict_disposition(features: dict):
 async def train_custom_model(
     training_file: UploadFile = File(..., description="CSV file with training data"),
     use_existing_data: bool = Form(default=True, description="Combine with existing data (True) or use only uploaded data (False)"),
-    model_name: str = Form(default="custom_model", description="Name for the trained model")
+    model_name: str = Form(default="custom_model", description="Name for the trained model"),
+    # XGBoost hyperparameters
+    max_depth: int = Form(default=6, description="Maximum tree depth (3-10 recommended)"),
+    learning_rate: float = Form(default=0.05, description="Learning rate / eta (0.01-0.3 recommended)"),
+    n_estimators: int = Form(default=500, description="Number of boosting rounds (100-1000)"),
+    min_child_weight: int = Form(default=3, description="Minimum sum of instance weight (1-10)"),
+    gamma: float = Form(default=0.1, description="Minimum loss reduction (0-1)"),
+    subsample: float = Form(default=0.8, description="Subsample ratio of training instances (0.5-1.0)"),
+    colsample_bytree: float = Form(default=0.8, description="Subsample ratio of columns (0.5-1.0)"),
+    reg_alpha: float = Form(default=0.1, description="L1 regularization term (0-1)"),
+    reg_lambda: float = Form(default=1.0, description="L2 regularization term (0-10)"),
+    # Training configuration
+    test_size: float = Form(default=0.2, description="Test set proportion (0.1-0.3)"),
+    val_size: float = Form(default=0.1, description="Validation set proportion (0.1-0.2)"),
+    n_folds: int = Form(default=5, description="Number of cross-validation folds (3-10)"),
+    early_stopping_rounds: int = Form(default=50, description="Early stopping rounds (20-100)")
 ):
     """
-    Train a new XGBoost model with custom data.
+    Train a new XGBoost model with custom data and hyperparameters.
     
     **Parameters:**
+    
+    *Data Parameters:*
     - **training_file**: CSV file with training data (must include 'koi_disposition' column)
-    - **use_existing_data**: If True, combines uploaded data with existing dataset. If False, uses only uploaded data.
+    - **use_existing_data**: If True, combines uploaded data with existing dataset
     - **model_name**: Custom name for the trained model
+    
+    *XGBoost Hyperparameters:*
+    - **max_depth**: Maximum tree depth (default: 6, range: 3-10)
+    - **learning_rate**: Learning rate / eta (default: 0.05, range: 0.01-0.3)
+    - **n_estimators**: Number of boosting rounds (default: 500, range: 100-1000)
+    - **min_child_weight**: Minimum sum of instance weight (default: 3, range: 1-10)
+    - **gamma**: Minimum loss reduction for split (default: 0.1, range: 0-1)
+    - **subsample**: Training instances subsample ratio (default: 0.8, range: 0.5-1.0)
+    - **colsample_bytree**: Columns subsample ratio (default: 0.8, range: 0.5-1.0)
+    - **reg_alpha**: L1 regularization (default: 0.1, range: 0-1)
+    - **reg_lambda**: L2 regularization (default: 1.0, range: 0-10)
+    
+    *Training Configuration:*
+    - **test_size**: Test set proportion (default: 0.2, range: 0.1-0.3)
+    - **val_size**: Validation set proportion (default: 0.1, range: 0.1-0.2)
+    - **n_folds**: Cross-validation folds (default: 5, range: 3-10)
+    - **early_stopping_rounds**: Early stopping rounds (default: 50, range: 20-100)
     
     **Returns:**
     - Training metrics (accuracy, precision, recall, F1-score)
     - Cross-validation scores
     - Feature importance (top 20)
     - Confusion matrix
+    - Hyperparameters used
     - Model file path for download
     - Visualization plots (base64 encoded)
     
     **Example:**
     ```bash
+    # Basic training
     curl -X POST "http://localhost:8000/api/train" \\
       -F "training_file=@my_data.csv" \\
       -F "use_existing_data=true" \\
       -F "model_name=my_custom_model"
+    
+    # With custom hyperparameters
+    curl -X POST "http://localhost:8000/api/train" \\
+      -F "training_file=@my_data.csv" \\
+      -F "max_depth=8" \\
+      -F "learning_rate=0.1" \\
+      -F "n_estimators=300" \\
+      -F "subsample=0.9"
     ```
+    
+    **Hyperparameter Tuning Tips:**
+    - **Underfitting** (low train & test accuracy):
+      - Increase `max_depth` (6→8→10)
+      - Increase `n_estimators` (500→800→1000)
+      - Decrease `min_child_weight` (3→2→1)
+      - Decrease regularization (`reg_alpha`, `reg_lambda`)
+    
+    - **Overfitting** (high train, low test accuracy):
+      - Decrease `max_depth` (6→5→4)
+      - Decrease `learning_rate` (0.05→0.03→0.01)
+      - Increase regularization (`reg_alpha`, `reg_lambda`)
+      - Decrease `subsample` and `colsample_bytree`
+    
+    - **Faster training**:
+      - Decrease `n_estimators`
+      - Increase `learning_rate`
+      - Decrease `n_folds`
+    
+    - **Better accuracy**:
+      - Increase `n_estimators`
+      - Decrease `learning_rate`
+      - Tune `max_depth` carefully
     """
     
     try:
@@ -1211,26 +1278,52 @@ async def train_custom_model(
         import matplotlib.pyplot as plt
         import seaborn as sns
         
-        # Configure training
+        # Configure training with custom hyperparameters
         config = {
             'data_path': None,  # We're passing data directly
             'target_column': 'koi_disposition',
             'output_dir': 'model_outputs',
-            'test_size': 0.2,
-            'val_size': 0.1,
+            'test_size': test_size,
+            'val_size': val_size,
             'random_state': 42,
             'model_name': f'xgboost_{model_name}',
+            'n_folds': n_folds,
+            # XGBoost hyperparameters
+            'xgb_params': {
+                'max_depth': max_depth,
+                'learning_rate': learning_rate,
+                'n_estimators': n_estimators,
+                'min_child_weight': min_child_weight,
+                'gamma': gamma,
+                'subsample': subsample,
+                'colsample_bytree': colsample_bytree,
+                'reg_alpha': reg_alpha,
+                'reg_lambda': reg_lambda,
+                'early_stopping_rounds': early_stopping_rounds,
+            }
         }
+        
+        print(f"\n🎯 Hyperparameters:")
+        print(f"   max_depth: {max_depth}")
+        print(f"   learning_rate: {learning_rate}")
+        print(f"   n_estimators: {n_estimators}")
+        print(f"   min_child_weight: {min_child_weight}")
+        print(f"   gamma: {gamma}")
+        print(f"   subsample: {subsample}")
+        print(f"   colsample_bytree: {colsample_bytree}")
+        print(f"   reg_alpha: {reg_alpha}")
+        print(f"   reg_lambda: {reg_lambda}")
+        print(f"   early_stopping_rounds: {early_stopping_rounds}")
         
         # Initialize predictor
         predictor = KOIDispositionPredictor(config)
         
-        # Set the data directly
-        predictor.df = training_df
+        # Override model parameters with custom hyperparameters
+        predictor.model_params.update(config['xgb_params'])
         
-        # Run preprocessing
+        # Run preprocessing - pass the dataframe directly
         print("\n📋 Preprocessing data...")
-        X, y = predictor.preprocess_data()
+        X, y = predictor.preprocess_data(training_df)
         
         # Split data
         from sklearn.model_selection import train_test_split
@@ -1253,7 +1346,7 @@ async def train_custom_model(
         )
         
         # Train model
-        print("\n🚀 Training model...")
+        print("\n🚀 Training model with custom hyperparameters...")
         y_val_encoded = predictor.train_model(X_train_scaled, y_train, X_val_scaled, y_val)
         
         # Cross-validation
@@ -1357,6 +1450,21 @@ async def train_custom_model(
             "status": "success",
             "model_name": model_name,
             "timestamp": timestamp,
+            "hyperparameters": {
+                "max_depth": max_depth,
+                "learning_rate": learning_rate,
+                "n_estimators": n_estimators,
+                "min_child_weight": min_child_weight,
+                "gamma": gamma,
+                "subsample": subsample,
+                "colsample_bytree": colsample_bytree,
+                "reg_alpha": reg_alpha,
+                "reg_lambda": reg_lambda,
+                "early_stopping_rounds": early_stopping_rounds,
+                "test_size": test_size,
+                "val_size": val_size,
+                "n_folds": n_folds
+            },
             "data_info": {
                 "total_samples": len(training_df),
                 "training_samples": len(X_train),
