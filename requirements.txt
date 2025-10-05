@@ -34,3 +34,6 @@ faiss-cpu>=1.7.0
 pypdf2>=3.0.0
 pdfplumber>=0.10.0
 
+# AutoML dependencies
+lightgbm>=3.3.0
+
