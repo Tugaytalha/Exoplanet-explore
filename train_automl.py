@@ -38,6 +38,45 @@ from xgboost import XGBClassifier
 import lightgbm as lgb
 from lightgbm import LGBMClassifier
 
+# GPU and parallel processing imports
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+# Try to import optional dependencies
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("⚠️ psutil not available - using basic system info")
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import DataLoader, TensorDataset
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("⚠️ PyTorch not available - GPU acceleration disabled")
+
+# Try to import GPU-accelerated libraries
+try:
+    import cupy as cp
+    CUPY_AVAILABLE = True
+    print("✅ CuPy available for GPU acceleration")
+except ImportError:
+    CUPY_AVAILABLE = False
+    print("⚠️ CuPy not available - using CPU only")
+
+try:
+    import cuml
+    CUML_AVAILABLE = True
+    print("✅ cuML available for GPU-accelerated ML")
+except ImportError:
+    CUML_AVAILABLE = False
+    print("⚠️ cuML not available - using scikit-learn")
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
@@ -61,6 +100,14 @@ CONFIG = {
     'output_dir': 'automl_outputs',
     'n_trials': 50,  # Number of random combinations to try
     'timeout_per_model': 300,  # 5 minutes per model
+    
+    # GPU and parallel processing configuration
+    'use_gpu': True,  # Enable GPU acceleration when available
+    'n_jobs': -1,  # Use all available CPU cores (-1 for all cores)
+    'parallel_trials': True,  # Run multiple trials in parallel
+    'max_parallel_trials': 4,  # Maximum parallel trials (to avoid memory issues)
+    'gpu_memory_fraction': 0.8,  # Fraction of GPU memory to use
+    'use_mixed_precision': True,  # Use mixed precision for GPU models
 }
 
 class AutoMLPipeline:
@@ -75,8 +122,69 @@ class AutoMLPipeline:
         self.best_score = 0
         self.best_params = None
         
+        # GPU and system detection
+        self.gpu_available = self._detect_gpu()
+        self.cpu_count = mp.cpu_count()
+        
+        if PSUTIL_AVAILABLE:
+            self.available_memory = psutil.virtual_memory().total / (1024**3)  # GB
+        else:
+            self.available_memory = 8.0  # Default assumption
+        
         # Create output directory
         os.makedirs(config['output_dir'], exist_ok=True)
+        
+        # Print system information
+        self._print_system_info()
+    
+    def _detect_gpu(self):
+        """Detect available GPU resources."""
+        gpu_info = {
+            'cuda_available': False,
+            'cuda_devices': 0,
+            'cupy_available': CUPY_AVAILABLE,
+            'cuml_available': CUML_AVAILABLE
+        }
+        
+        if TORCH_AVAILABLE:
+            gpu_info['cuda_available'] = torch.cuda.is_available()
+            gpu_info['cuda_devices'] = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            
+            if gpu_info['cuda_available']:
+                gpu_info['cuda_device_name'] = torch.cuda.get_device_name(0)
+                gpu_info['cuda_memory'] = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+        
+        return gpu_info
+    
+    def _print_system_info(self):
+        """Print system information for optimization."""
+        print("\n" + "="*70)
+        print("SYSTEM INFORMATION")
+        print("="*70)
+        
+        print(f"🖥️  CPU Cores: {self.cpu_count}")
+        print(f"💾 Available Memory: {self.available_memory:.1f} GB")
+        
+        if self.gpu_available['cuda_available']:
+            print(f"🚀 GPU Available: {self.gpu_available['cuda_device_name']}")
+            print(f"🎮 GPU Memory: {self.gpu_available['cuda_memory']:.1f} GB")
+            print(f"📊 GPU Devices: {self.gpu_available['cuda_devices']}")
+        else:
+            print("⚠️  No GPU detected - using CPU only")
+        
+        print(f"🔧 CuPy Available: {'✅' if self.gpu_available['cupy_available'] else '❌'}")
+        print(f"🔧 cuML Available: {'✅' if self.gpu_available['cuml_available'] else '❌'}")
+        
+        # Determine optimal configuration
+        if self.gpu_available['cuda_available'] and self.config['use_gpu']:
+            print(f"🚀 GPU acceleration enabled")
+            self.config['n_jobs'] = min(4, self.cpu_count)  # Reduce CPU jobs when using GPU
+        else:
+            print(f"🖥️  CPU-only mode - using {self.cpu_count} cores")
+            self.config['n_jobs'] = self.cpu_count
+        
+        print(f"⚡ Parallel trials: {'✅' if self.config['parallel_trials'] else '❌'}")
+        print(f"🔢 Max parallel trials: {self.config['max_parallel_trials']}")
         
     def load_and_preprocess_data(self):
         """Load and preprocess the data."""
@@ -150,6 +258,21 @@ class AutoMLPipeline:
     
     def get_model_configurations(self):
         """Define model configurations with hyperparameter ranges."""
+        # Base parameters for all models
+        base_params = {
+            'random_state': [RANDOM_STATE],
+            'n_jobs': [self.config['n_jobs']]
+        }
+        
+        # GPU-optimized parameters
+        gpu_params = {}
+        if self.gpu_available['cuda_available'] and self.config['use_gpu']:
+            gpu_params = {
+                'tree_method': ['gpu_hist'],
+                'gpu_id': [0],
+                'predictor': ['gpu_predictor']
+            }
+        
         return {
             'XGBoost': {
                 'model': XGBClassifier,
@@ -163,7 +286,8 @@ class AutoMLPipeline:
                     'colsample_bytree': [0.8, 0.9, 1.0],
                     'reg_alpha': [0, 0.1, 0.5],
                     'reg_lambda': [1, 1.5, 2],
-                    'random_state': [RANDOM_STATE]
+                    **base_params,
+                    **gpu_params
                 }
             },
             'LightGBM': {
@@ -177,7 +301,10 @@ class AutoMLPipeline:
                     'colsample_bytree': [0.8, 0.9, 1.0],
                     'reg_alpha': [0, 0.1, 0.5],
                     'reg_lambda': [0, 0.1, 0.5],
-                    'random_state': [RANDOM_STATE],
+                    'device': ['gpu'] if self.gpu_available['cuda_available'] and self.config['use_gpu'] else ['cpu'],
+                    'gpu_platform_id': [0] if self.gpu_available['cuda_available'] and self.config['use_gpu'] else [None],
+                    'gpu_device_id': [0] if self.gpu_available['cuda_available'] and self.config['use_gpu'] else [None],
+                    **base_params,
                     'verbose': [-1]
                 }
             },
@@ -291,6 +418,68 @@ class AutoMLPipeline:
         
         return combinations
     
+    def _train_single_model(self, trial_info):
+        """Train a single model configuration (for parallel processing)."""
+        model_class, params, X_train, y_train, X_val, y_val, X_test, y_test, trial_id = trial_info
+        
+        try:
+            print(f"🔬 Trial {trial_id} - {model_class.__name__}")
+            
+            # Create model instance
+            model = model_class(**params)
+            
+            # Handle class imbalance
+            from sklearn.utils.class_weight import compute_class_weight
+            classes = np.unique(y_train)
+            class_weights = compute_class_weight('balanced', classes=classes, y=y_train)
+            class_weight_dict = {int(cls): float(weight) for cls, weight in zip(classes, class_weights)}
+            
+            # Train model
+            if hasattr(model, 'sample_weight'):
+                sample_weights = np.array([class_weight_dict[int(label)] for label in y_train])
+                model.fit(X_train, y_train, sample_weight=sample_weights)
+            else:
+                model.fit(X_train, y_train)
+            
+            # Make predictions
+            y_pred = model.predict(X_test)
+            y_pred_proba = model.predict_proba(X_test) if hasattr(model, 'predict_proba') else None
+            
+            # Calculate metrics
+            accuracy = accuracy_score(y_test, y_pred)
+            precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred, average='weighted')
+            
+            # Cross-validation
+            cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy', n_jobs=1)
+            cv_mean = np.mean(cv_scores)
+            cv_std = np.std(cv_scores)
+            
+            return {
+                'trial_id': trial_id,
+                'model_name': model_class.__name__,
+                'params': params,
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'cv_mean': cv_mean,
+                'cv_std': cv_std,
+                'model': model,
+                'predictions': y_pred,
+                'probabilities': y_pred_proba,
+                'success': True
+            }
+            
+        except Exception as e:
+            print(f"❌ Error in trial {trial_id}: {str(e)}")
+            return {
+                'trial_id': trial_id,
+                'model_name': model_class.__name__,
+                'params': params,
+                'error': str(e),
+                'success': False
+            }
+    
     def train_and_evaluate_model(self, model_class, params, X_train, y_train, X_val, y_val, X_test, y_test):
         """Train and evaluate a single model configuration."""
         try:
@@ -397,9 +586,12 @@ class AutoMLPipeline:
         start_time = time.time()
         trial_count = 0
         
+        # Prepare all trials for parallel processing
+        all_trials = []
+        
         for model_name, config in model_configs.items():
             print(f"\n{'='*50}")
-            print(f"Testing {model_name}")
+            print(f"Preparing {model_name} trials")
             print(f"{'='*50}")
             
             model_class = config['model']
@@ -411,34 +603,46 @@ class AutoMLPipeline:
             
             for i, params in enumerate(param_combinations):
                 trial_count += 1
-                print(f"\n🔬 Trial {trial_count}/{self.config['n_trials']} - {model_name} #{i+1}")
-                print(f"   Parameters: {params}")
-                
-                # Train and evaluate
-                result = self.train_and_evaluate_model(
+                trial_info = (
                     model_class, params, 
                     X_train_scaled, y_train_encoded,
                     X_val_scaled, y_val_encoded,
-                    X_test_scaled, y_test_encoded
+                    X_test_scaled, y_test_encoded,
+                    trial_count
                 )
+                all_trials.append(trial_info)
+        
+        print(f"\n🚀 Starting parallel training of {len(all_trials)} trials...")
+        
+        # Run trials in parallel or sequentially
+        if self.config['parallel_trials'] and len(all_trials) > 1:
+            max_workers = min(self.config['max_parallel_trials'], len(all_trials), self.cpu_count)
+            print(f"⚡ Using {max_workers} parallel workers")
+            
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(self._train_single_model, all_trials))
+        else:
+            print("🔄 Running trials sequentially")
+            results = [self._train_single_model(trial) for trial in all_trials]
+        
+        # Process results
+        for result in results:
+            if result['success']:
+                self.results.append(result)
                 
-                if result:
-                    self.results.append(result)
-                    
-                    # Update best model
-                    if result['cv_mean'] > self.best_score:
-                        self.best_score = result['cv_mean']
-                        self.best_model = result['model']
-                        self.best_params = result['params']
-                        print(f"   🏆 New best model! CV Score: {result['cv_mean']:.4f}")
-                    else:
-                        print(f"   📊 CV Score: {result['cv_mean']:.4f}")
-                
-                # Check timeout
-                elapsed_time = time.time() - start_time
-                if elapsed_time > self.config['timeout_per_model'] * len(model_configs):
-                    print(f"\n⏰ Timeout reached after {elapsed_time:.1f} seconds")
-                    break
+                # Update best model
+                if result['cv_mean'] > self.best_score:
+                    self.best_score = result['cv_mean']
+                    self.best_model = result['model']
+                    self.best_params = result['params']
+                    print(f"🏆 New best model! CV Score: {result['cv_mean']:.4f}")
+                else:
+                    print(f"📊 Trial {result['trial_id']} CV Score: {result['cv_mean']:.4f}")
+            else:
+                print(f"❌ Trial {result['trial_id']} failed: {result.get('error', 'Unknown error')}")
+        
+        elapsed_time = time.time() - start_time
+        print(f"\n⏱️ Total training time: {elapsed_time:.1f} seconds")
         
         print(f"\n{'='*70}")
         print(f"AUTOML COMPLETE")
