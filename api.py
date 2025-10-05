@@ -121,12 +121,12 @@ df = load_data_from_mongodb()
 if df is None:
     print("📊 Loading data from CSV...")
             
-if not DATA_PATH.exists():
-    raise FileNotFoundError(
-        f"{DATA_PATH} not found – run fetch.py first to create it."
-    )
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"{DATA_PATH} not found – run fetch.py first to create it."
+        )
 
-df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
