@@ -1503,7 +1503,7 @@ async def train_custom_model(
         
         # Prepare results dictionary for saving
         results = {
-            'test_accuracy': test_accuracy,
+            'accuracy': test_accuracy,  # Method expects 'accuracy' key
             'test_precision': precision,
             'test_recall': recall,
             'test_f1': f1,
