@@ -121,12 +121,12 @@ df = load_data_from_mongodb()
 if df is None:
     print("📊 Loading data from CSV...")
             
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(
-            f"{DATA_PATH} not found – run fetch.py first to create it."
-        )
+if not DATA_PATH.exists():
+    raise FileNotFoundError(
+        f"{DATA_PATH} not found – run fetch.py first to create it."
+    )
 
-    df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
@@ -920,7 +920,7 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-        rows = subset.iloc[skip : skip + limit]
+    rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
@@ -1500,7 +1500,7 @@ async def train_custom_model(
         # Save model
         print("\n💾 Saving model...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        saved_paths = predictor.save_artifacts(timestamp)
+        saved_paths = predictor.save_model_artifacts(timestamp)
         
         # Model download path
         model_filename = saved_paths['model'].split('/')[-1]

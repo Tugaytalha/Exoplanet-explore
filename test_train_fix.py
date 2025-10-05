@@ -55,6 +55,7 @@ def test_train_endpoint():
             print("   ✅ Cross-validation data type fixed")
             print("   ✅ Feature importance calculation added")
             print("   ✅ Visualization generation working")
+            print("   ✅ Model saving method fixed")
         else:
             print(f"❌ Error: {response.status_code}")
             print(f"Response: {response.text}")
