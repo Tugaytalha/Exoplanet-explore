@@ -6,7 +6,7 @@ import warnings
 
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Path as FastAPIPath
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -57,186 +57,6 @@ def connect_to_mongodb():
 
 # Try to connect to MongoDB at startup
 mongo_connected = connect_to_mongodb()
-
-# ---------- Lightcurve Helper Functions ----------
-LETTER_MAP = {1:"b", 2:"c", 3:"d", 4:"e", 5:"f", 6:"g", 7:"h", 8:"i"}
-
-def _planet_letter(row, rank_within_system=None):
-    """Determine planet letter (b, c, d, ...) from row data."""
-    # Prefer explicit "Kepler-11 f" style names
-    name = row.get("kepler_name")
-    if isinstance(name, str) and len(name.split()) >= 2:
-        last = name.split()[-1].strip()
-        if last.isalpha() and len(last) == 1:
-            return last.lower()
-    # Next, use TCE number if present
-    tce_num = row.get("koi_tce_plnt_num")
-    if pd.notna(tce_num):
-        return LETTER_MAP.get(int(tce_num))
-    # Fallback: order by period within system
-    if rank_within_system is not None:
-        return LETTER_MAP.get(rank_within_system + 1)
-    return "?"
-
-def _decimate(x: np.ndarray, y: np.ndarray, max_points: int = 5000):
-    """Uniformly thin arrays to <= max_points (for payload size)."""
-    n = len(x)
-    if n <= max_points:
-        return x.tolist(), y.tolist()
-    idx = np.linspace(0, n - 1, max_points).astype(int)
-    return x[idx].tolist(), y[idx].tolist()
-
-def _compute_centers(t0: float, period: float, t_min: float, t_max: float):
-    """Compute transit centers within time range."""
-    if not (np.isfinite(t0) and np.isfinite(period) and period > 0):
-        return []
-    k_min = int(np.floor((t_min - t0)/period)) - 1
-    k_max = int(np.ceil((t_max - t0)/period)) + 1
-    centers = t0 + period * np.arange(k_min, k_max + 1)
-    centers = centers[(centers >= t_min) & (centers <= t_max)]
-    return centers.tolist()
-
-def _synthetic_lightcurve(system_df: pd.DataFrame,
-                          days_window: float = 200.0,
-                          cadence_min: float = 30.0,
-                          noise_ppm: float = 400.0):
-    """
-    Build a synthetic Kepler-like light curve in BKJD using KOI columns only.
-    Returns time (BKJD), flux (normalized), and per-planet centers.
-    """
-    if system_df.empty:
-        return [], [], [], (0.0, 0.0)
-
-    # Time grid (BKJD)
-    t0s = system_df["koi_time0bk"].dropna().values
-    t_start = float(np.nanmin(t0s)) if len(t0s) else 0.0
-    t_end = t_start + float(days_window)
-    dt = float(cadence_min) / (60.0 * 24.0)  # minutes -> days
-    t = np.arange(t_start, t_end, dt)
-
-    # Baseline ~ 1 with Gaussian noise
-    rng = np.random.default_rng(42)
-    flux = 1.0 + rng.normal(0.0, noise_ppm/1e6, size=t.size)
-
-    # Sort for consistent labeling
-    sys_sorted = system_df.sort_values("koi_period")
-
-    # Inject simple Gaussian dips at predicted centers
-    planets = []
-    for rank, (_, row) in enumerate(sys_sorted.iterrows()):
-        P = row.get("koi_period")
-        T0 = row.get("koi_time0bk")
-        dur_hr = row.get("koi_duration")
-        depth_ppm = row.get("koi_depth")
-        if not (pd.notna(P) and pd.notna(T0) and pd.notna(dur_hr) and pd.notna(depth_ppm)):
-            continue
-
-        depth = float(depth_ppm) / 1e6
-        sigma = (float(dur_hr) / 24.0) / 6.0  # soft width
-
-        centers = np.array(_compute_centers(T0, P, t_start, t_end))
-        for tc in centers:
-            x = (t - tc) / sigma
-            flux -= depth * np.exp(-0.5 * x * x)
-
-        letter = _planet_letter(row, rank_within_system=rank)
-        planets.append({
-            "name": row.get("kepler_name") or row.get("kepoi_name"),
-            "letter": letter,
-            "koi_name": row.get("kepoi_name"),
-            "period": float(P),
-            "t0_bkjd": float(T0),
-            "duration_hr": float(dur_hr),
-            "depth_ppm": float(depth_ppm),
-            "centers": centers.tolist(),
-        })
-
-    return t, flux, planets, (t_start, t_end)
-
-def _real_lightcurve_or_none(kepid: int):
-    """
-    Try to fetch real Kepler LC (BKJD) via lightkurve. Return (time, flux) or (None, None).
-    """
-    try:
-        from lightkurve import search_lightcurve
-        srch = search_lightcurve(f"KIC {kepid}", mission="Kepler")
-        lcs = srch.download_all()
-        if lcs is None or len(lcs) == 0:
-            return None, None
-        lc = lcs.stitch().remove_nans().normalize()
-        return lc.time.value, lc.flux.value  # BKJD, normalized
-    except Exception:
-        return None, None
-
-def build_lightcurve_payload(kepid: int,
-                             system_df: pd.DataFrame,
-                             mode: str = "synthetic",
-                             days_window: float = 200.0,
-                             cadence_min: float = 30.0,
-                             noise_ppm: float = 400.0,
-                             max_points: int = 5000):
-    """
-    Returns a dict ready to JSON: { time, flux, time_system, normalized, mode, meta, planets }
-    """
-    mode = (mode or "synthetic").lower()
-    if mode == "real":
-        t, f = _real_lightcurve_or_none(kepid)
-        if t is not None and f is not None:
-            t = np.asarray(t); f = np.asarray(f)
-            t_min, t_max = float(np.min(t)), float(np.max(t))
-            # Planet markers from KOI
-            planets = []
-            sys_sorted = system_df.sort_values("koi_period")
-            for rank, (_, row) in enumerate(sys_sorted.iterrows()):
-                P = row.get("koi_period"); T0 = row.get("koi_time0bk")
-                if not (pd.notna(P) and pd.notna(T0)): 
-                    continue
-                letter = _planet_letter(row, rank_within_system=rank)
-                planets.append({
-                    "name": row.get("kepler_name") or row.get("kepoi_name"),
-                    "letter": letter,
-                    "koi_name": row.get("kepoi_name"),
-                    "period": float(P), "t0_bkjd": float(T0),
-                    "duration_hr": float(row.get("koi_duration")) if pd.notna(row.get("koi_duration")) else None,
-                    "depth_ppm": float(row.get("koi_depth")) if pd.notna(row.get("koi_depth")) else None,
-                    "centers": _compute_centers(float(T0), float(P), t_min, t_max),
-                })
-            # decimate
-            tx, fx = _decimate(t, f, max_points=max_points)
-            payload = {
-                "kepid": int(kepid),
-                "time": tx,
-                "flux": fx,
-                "time_system": "BKJD",      # BJD - 2454833
-                "normalized": True,
-                "mode": "real",
-                "meta": {"t_min": t_min, "t_max": t_max, "max_points": max_points},
-                "planets": planets
-            }
-            return payload
-        # fall through to synthetic if real failed
-
-    # synthetic
-    t, f, planets, (t_min, t_max) = _synthetic_lightcurve(
-        system_df, days_window=days_window, cadence_min=cadence_min, noise_ppm=noise_ppm
-    )
-    t = np.asarray(t); f = np.asarray(f)
-    tx, fx = _decimate(t, f, max_points=max_points)
-    return {
-        "kepid": int(kepid),
-        "time": tx,
-        "flux": fx,
-        "time_system": "BKJD",     # matches koi_time0bk
-        "normalized": True,
-        "mode": "synthetic",
-        "meta": {
-            "t_min": float(t_min), "t_max": float(t_max),
-            "cadence_min": float(cadence_min),
-            "noise_ppm": float(noise_ppm),
-            "max_points": int(max_points)
-        },
-        "planets": planets
-    }
 
 # ---------- load & prepare the table once at startup ----------
 def load_data_from_mongodb():
@@ -299,7 +119,7 @@ if df is None:
             f"{DATA_PATH} not found – run fetch.py first to create it."
         )
 
-    df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(DATA_PATH)
     print(f"✅ Loaded {len(df)} rows from CSV")
     
     # Check if required column exists
@@ -968,10 +788,10 @@ def root():
         "endpoints": {
             "/planets": "List all KOIs with ML predictions",
             "/planets/{kepid}": "Get specific KOI by Kepler ID",
-            "/planets/{kepid}/lightcurve": "Get light curve data for plotting (synthetic or real)",
             "/api/features": "Get list of required features for prediction",
             "/api/predict": "Predict disposition from feature values (POST)",
             "/api/train": "Train custom model with uploaded data (POST)",
+            "/api/latest-visualization": "Get latest training visualization as base64",
             "/api/download/{filename}": "Download trained model files",
             "/model/status": "Get model status and information",
             "/stats": "Get dataset statistics and model accuracy"
@@ -1160,83 +980,6 @@ def get_planet(
     # Use optimized conversion
     result = df_to_dict_list(row, include_actual=include_actual, include_probabilities=include_probabilities)
     return result[0]
-
-
-@app.get("/planets/{kepid}/lightcurve", summary="Light curve data for plotting (JSON)")
-def get_lightcurve_data(
-    kepid: int = FastAPIPath(..., description="Kepler ID"),
-    mode: str = Query("synthetic", pattern="^(synthetic|real)$",
-                      description="synthetic (fast, local) or real (requires lightkurve)"),
-    days_window: float = Query(200.0, ge=1.0, le=2000.0,
-                               description="Synthetic only: window length in days"),
-    cadence_min: float = Query(30.0, ge=1.0, le=60.0,
-                               description="Synthetic only: sampling cadence in minutes"),
-    noise_ppm: float = Query(400.0, ge=0.0, le=2000.0,
-                             description="Synthetic only: white noise level (ppm)"),
-    max_points: int = Query(5000, ge=100, le=200_000,
-                            description="Decimate to <= this many points")
-):
-    """
-    Get light curve data for plotting. Returns time series data with transit markers.
-    
-    **Mode: synthetic**
-    - Fast, generated locally from KOI parameters
-    - Simulates Kepler-like light curve with Gaussian transits
-    - Configurable window, cadence, and noise
-    
-    **Mode: real**
-    - Fetches actual Kepler data via lightkurve (requires internet)
-    - Falls back to synthetic if unavailable
-    - Transit markers from KOI parameters
-    
-    **Returns:**
-    ```json
-    {
-      "kepid": 10797460,
-      "time": [136.5, 136.52, ...],  // BKJD (days)
-      "flux": [1.0001, 0.9998, ...],  // normalized
-      "time_system": "BKJD",
-      "normalized": true,
-      "mode": "synthetic",
-      "meta": {...},
-      "planets": [
-        {
-          "name": "Kepler-227 b",
-          "letter": "b",
-          "koi_name": "K00752.01",
-          "period": 15.85567,
-          "t0_bkjd": 136.5127,
-          "duration_hr": 2.8933,
-          "depth_ppm": 944.0,
-          "centers": [136.5, 152.3, ...]  // transit times
-        }
-      ]
-    }
-    ```
-    
-    **Example:**
-    ```bash
-    # Synthetic light curve
-    curl "http://localhost:8000/planets/10797460/lightcurve"
-    
-    # Real Kepler data
-    curl "http://localhost:8000/planets/10797460/lightcurve?mode=real"
-    
-    # Custom synthetic parameters
-    curl "http://localhost:8000/planets/10797460/lightcurve?days_window=500&cadence_min=15&noise_ppm=200"
-    ```
-    """
-    # Get system subset (all KOIs for this kepid)
-    sys_df = df[df["kepid"] == kepid]
-    if sys_df.empty:
-        raise HTTPException(status_code=404, detail=f"kepid {kepid} not found")
-
-    payload = build_lightcurve_payload(
-        kepid, sys_df, mode=mode,
-        days_window=days_window, cadence_min=cadence_min,
-        noise_ppm=noise_ppm, max_points=max_points
-    )
-    return payload
 
 
 @app.get("/model/status", response_model=ModelStatus)
@@ -1666,6 +1409,169 @@ def download_model_file(filename: str):
         filename=filename,
         media_type='application/octet-stream'
     )
+
+
+@app.get("/api/latest-visualization")
+def get_latest_training_visualization():
+    """
+    Get the latest training visualization plot as base64 encoded PNG with evaluation metrics.
+    
+    **Returns:**
+    - Base64 encoded PNG image of the latest training evaluation plots
+    - Complete evaluation metrics (accuracy, precision, recall, F1)
+    - Feature importance (top 20)
+    - Confusion matrix
+    - Cross-validation scores
+    - Timestamp and file information
+    
+    **Response:**
+    ```json
+    {
+      "plot_base64": "iVBORw0KGgoAAAANSUhEUgAAA...",
+      "timestamp": "20251004_221246",
+      "filename": "model_evaluation_20251004_221245.png",
+      "created_at": "2025-10-04T22:12:45",
+      "metrics": {
+        "test_accuracy": 0.9816,
+        "test_precision": 0.9829,
+        "test_recall": 0.9816,
+        "test_f1": 0.9821,
+        "cv_mean": 0.9844,
+        "cv_std": 0.0010,
+        "cv_scores": [0.9843, 0.9850, 0.9859, 0.9835, 0.9831]
+      },
+      "classification_report": {...},
+      "confusion_matrix": [[321, 0, 75], [12, 10484, 4], [127, 0, 841]],
+      "feature_importance": [
+        {"feature": "sy_pmdec", "importance": 0.2115},
+        ...
+      ]
+    }
+    ```
+    
+    **Example:**
+    ```bash
+    # Get latest visualization with metrics
+    curl "http://localhost:8000/api/latest-visualization"
+    
+    # Extract just metrics
+    curl "http://localhost:8000/api/latest-visualization" | jq '.metrics'
+    
+    # Display plot in HTML
+    curl "http://localhost:8000/api/latest-visualization" | jq -r '.plot_base64' | \
+      sed 's/^/<img src="data:image\/png;base64,/' | sed 's/$/" \/>/'
+    ```
+    """
+    
+    try:
+        # Find all visualization PNG files
+        viz_files = list(MODEL_DIR.glob("model_evaluation_*.png"))
+        
+        if not viz_files:
+            raise HTTPException(
+                status_code=404,
+                detail="No training visualizations found. Train a model first."
+            )
+        
+        # Get the most recent file
+        latest_viz = max(viz_files, key=lambda x: x.stat().st_mtime)
+        
+        # Extract timestamp from filename: model_evaluation_20251004_221245.png
+        filename = latest_viz.name
+        # The timestamp in the PNG filename is slightly different (ends in 45 vs 46)
+        # We need to find the corresponding metrics file
+        timestamp_base = filename.replace("model_evaluation_", "").replace(".png", "")
+        
+        # Try to find matching metrics file (timestamp might differ by 1-2 seconds)
+        metrics_files = list(MODEL_DIR.glob(f"evaluation_metrics_{timestamp_base[:9]}*.json"))
+        if not metrics_files:
+            # Fallback: find the most recent metrics file
+            metrics_files = list(MODEL_DIR.glob("evaluation_metrics_*.json"))
+        
+        # Read and encode the image
+        with open(latest_viz, 'rb') as f:
+            image_data = f.read()
+            plot_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        # Get file creation time
+        created_timestamp = latest_viz.stat().st_mtime
+        created_at = datetime.fromtimestamp(created_timestamp).isoformat()
+        
+        # Build base response
+        response = {
+            "plot_base64": plot_base64,
+            "timestamp": timestamp_base,
+            "filename": filename,
+            "description": "Training visualization with confusion matrix, feature importance, class distribution, and CV scores",
+            "created_at": created_at,
+            "file_size_bytes": len(image_data),
+            "image_format": "png"
+        }
+        
+        # Load evaluation metrics if available
+        if metrics_files:
+            try:
+                # Get the most recent metrics file
+                latest_metrics = max(metrics_files, key=lambda x: x.stat().st_mtime)
+                metrics_timestamp = latest_metrics.stem.replace("evaluation_metrics_", "")
+                
+                with open(latest_metrics, 'r') as f:
+                    metrics_data = json.load(f)
+                
+                # Extract metrics
+                response["metrics"] = {
+                    "test_accuracy": float(metrics_data.get("test_accuracy", 0)),
+                    "test_precision": float(metrics_data.get("classification_report", {}).get("weighted avg", {}).get("precision", 0)),
+                    "test_recall": float(metrics_data.get("classification_report", {}).get("weighted avg", {}).get("recall", 0)),
+                    "test_f1": float(metrics_data.get("classification_report", {}).get("weighted avg", {}).get("f1-score", 0)),
+                    "cv_mean": float(metrics_data.get("cv_mean", 0)),
+                    "cv_std": float(metrics_data.get("cv_std", 0)),
+                    "cv_scores": [float(s) for s in metrics_data.get("cv_scores", [])]
+                }
+                
+                # Add classification report
+                response["classification_report"] = metrics_data.get("classification_report", {})
+                
+                # Add confusion matrix
+                response["confusion_matrix"] = metrics_data.get("confusion_matrix", [])
+                
+                # Update timestamp to match metrics file
+                response["metrics_timestamp"] = metrics_timestamp
+                
+            except Exception as e:
+                print(f"⚠️  Could not load metrics: {e}")
+                response["metrics_error"] = str(e)
+        
+        # Load feature importance if available
+        feature_importance_files = list(MODEL_DIR.glob(f"feature_importance_{timestamp_base[:9]}*.csv"))
+        if not feature_importance_files:
+            feature_importance_files = list(MODEL_DIR.glob("feature_importance_*.csv"))
+        
+        if feature_importance_files:
+            try:
+                latest_fi = max(feature_importance_files, key=lambda x: x.stat().st_mtime)
+                fi_df = pd.read_csv(latest_fi)
+                
+                # Get top 20 features
+                top_20 = fi_df.head(20).to_dict('records')
+                response["feature_importance"] = top_20
+                response["feature_importance_count"] = len(fi_df)
+                
+            except Exception as e:
+                print(f"⚠️  Could not load feature importance: {e}")
+                response["feature_importance_error"] = str(e)
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error loading visualization: {str(e)}"
+        )
 
 
 @app.get("/stats", response_model=dict)
