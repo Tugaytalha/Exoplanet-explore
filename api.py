@@ -920,7 +920,7 @@ def list_planets(
         rows = subset.iloc[skip:]
     else:
         # Return limited rows
-    rows = subset.iloc[skip : skip + limit]
+        rows = subset.iloc[skip : skip + limit]
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
