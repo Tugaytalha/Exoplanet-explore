@@ -1396,6 +1396,13 @@ async def train_custom_model(
                 verbose=False
             )
             
+            # Calculate feature importance
+            import pandas as pd
+            predictor.feature_importance = pd.DataFrame({
+                'feature': predictor.feature_names,
+                'importance': predictor.model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            
             return y_val_encoded
         
         y_val_encoded = train_with_custom_params(
@@ -1434,7 +1441,7 @@ async def train_custom_model(
         cm = confusion_matrix(y_test_encoded, y_pred)
         
         # Feature importance
-        feature_importance_df = predictor.get_feature_importance()
+        feature_importance_df = predictor.feature_importance
         top_features = feature_importance_df.head(20).to_dict('records')
         
         # Generate plots

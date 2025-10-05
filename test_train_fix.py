@@ -51,7 +51,7 @@ def test_train_endpoint():
                 for key, value in result['hyperparameters_used'].items():
                     print(f"   {key}: {value}")
                     
-            print("\n🎉 Cross-validation fix is working correctly!")
+            print("\n🎉 Cross-validation and feature importance fixes are working correctly!")
         else:
             print(f"❌ Error: {response.status_code}")
             print(f"Response: {response.text}")
