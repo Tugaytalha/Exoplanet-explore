@@ -18,8 +18,6 @@ import base64
 from datetime import datetime
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
-from functools import lru_cache
-import time
 
 # Import RAG system
 try:
@@ -398,16 +396,13 @@ def update_mongodb_predictions():
                 if (i + batch_size) % 10000 == 0:
                     print(f"   Inserted {i + batch_size} documents...")
             
-            # Create indexes for optimal performance
+            # Create indexes
             mongo_collection.create_index('kepid', unique=True)
             mongo_collection.create_index('disposition')
             mongo_collection.create_index('is_exoplanet')
-            # Create compound indexes for common query patterns
-            mongo_collection.create_index([("disposition", 1), ("is_exoplanet", 1)])
-            mongo_collection.create_index([("kepid", 1), ("disposition", 1)])
             
             print(f"✅ Successfully inserted {len(cleaned_records)} documents to MongoDB")
-            print(f"   Created indexes on: kepid, disposition, is_exoplanet, compound indexes")
+            print(f"   Created indexes on: kepid, disposition, is_exoplanet")
             return True
         else:
             # MongoDB has data, update only prediction fields
@@ -594,13 +589,17 @@ app.add_middleware(
 )
 
 # helper – convert dataframe to list of dictionaries efficiently
-# Pre-computed column lists for performance
-_OPTIMIZED_COLUMNS = {
-    'base': [
+def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, include_probabilities: bool = False) -> list:
+    """Convert DataFrame to list of API response dictionaries using vectorized operations."""
+    
+    # Essential columns - Kimlik/konum (Identity/Location)
+    base_columns = [
         'kepid', 'tic_id', 'kepoi_name', 'kepler_name', 'hostname',
         'ra', 'dec', 'ra_str', 'dec_str',
-    ],
-    'transit': [
+    ]
+    
+    # Transit core columns - Transit çekirdeği
+    transit_columns = [
         'koi_period', 'koi_period_err1', 'koi_period_err2',
         'koi_time0bk', 'koi_time0bk_err1', 'koi_time0bk_err2',
         'koi_duration', 'koi_duration_err1', 'koi_duration_err2',
@@ -609,112 +608,141 @@ _OPTIMIZED_COLUMNS = {
         'koi_dor', 'koi_dor_err1', 'koi_dor_err2',
         'koi_impact', 'koi_impact_err1', 'koi_impact_err2',
         'koi_model_snr', 'koi_num_transits',
-    ],
-    'stellar': [
+    ]
+    
+    # Stellar parameters - Yıldız
+    stellar_columns = [
         'st_teff', 'st_rad', 'st_mass',
         'koi_steff', 'koi_srad', 'koi_smass',
         'koi_steff_err1', 'koi_steff_err2',
         'koi_srad_err1', 'koi_srad_err2',
         'koi_smass_err1', 'koi_smass_err2',
-    ],
-    'derived': [
+    ]
+    
+    # Derived/display parameters - Türev/gösterim
+    derived_columns = [
         'koi_prad', 'koi_prad_err1', 'koi_prad_err2',
         'koi_sma', 'koi_sma_err1', 'koi_sma_err2',
         'koi_teq', 'koi_teq_err1', 'koi_teq_err2',
         'koi_insol', 'koi_insol_err1', 'koi_insol_err2',
-    ],
-    'disposition': [
+    ]
+    
+    # Disposition/filters - Rozet/filtre
+    disposition_columns = [
         'koi_disposition', 'koi_pdisposition',
         'koi_fpflag_nt', 'koi_fpflag_ss', 'koi_fpflag_co', 'koi_fpflag_ec',
         'disposition', 'disposition_source', 'prediction_confidence',
         'is_exoplanet',
-    ],
-    'photometry': [
+    ]
+    
+    # Photometry - Fotometri (minimal set only)
+    photometry_columns = [
         'koi_kepmag', 'koi_kepmag_err',
         'sy_gaiamag', 'sy_gaiamagerr1',
         'sy_tmag', 'sy_tmagerr1',
-    ],
-    'sky': [
+    ]
+    
+    # 3D/Sky position - 3D/sky (minimal set only)
+    sky_columns = [
         'sy_dist', 'sy_disterr1', 'sy_disterr2',
         'sy_plx', 'sy_plxerr1', 'sy_plxerr2',
         'x_pc', 'y_pc', 'z_pc', 'dist_ly',
     ]
-}
-
-# Pre-computed excluded columns for performance
-_EXCLUDED_COLUMNS = {
-    'koi_delivname', 'koi_vet_stat', 'koi_quarters', 'koi_count', 'koi_max_sngle_ev', 
-    'koi_max_mult_ev', 'koi_bin_oedp_sig', 'koi_limbdark_mod', 'koi_ldm_coeff1', 
-    'koi_ldm_coeff2', 'koi_ldm_coeff3', 'koi_ldm_coeff4', 'koi_trans_mod', 'koi_model_dof', 
-    'koi_model_chisq', 'koi_eccen', 'koi_eccen_err1', 'koi_eccen_err2', 'koi_longp', 
-    'koi_longp_err1', 'koi_longp_err2', 'koi_time0', 'koi_time0_err1', 'koi_time0_err2', 
-    'koi_ingress', 'koi_ingress_err1', 'koi_ingress_err2', 'koi_incl', 'koi_incl_err1', 
-    'koi_incl_err2', 'koi_sparprov', 'koi_comment', 'koi_vet_date', 'koi_tce_plnt_num', 
-    'koi_tce_delivname', 'koi_disp_prov', 'koi_parm_prov', 'host', 'hd_name', 'hip_name', 
-    'glon', 'glat', 'elon', 'elat', 'ra_str', 'dec_str', 'rastr', 'decstr', 'st_met', 
-    'st_meterr1', 'st_meterr2', 'st_logg', 'st_loggerr1', 'st_loggerr2', 'st_age', 
-    'st_ageerr1', 'st_ageerr2', 'st_lum', 'st_lumerr1', 'st_lumerr2', 'st_dens', 
-    'st_denserr1', 'st_denserr2', 'st_radv', 'st_radverr1', 'st_radverr2', 'st_vsin', 
-    'st_vsinerr1', 'st_vsinerr2', 'st_rotp', 'st_rotperr1', 'st_rotperr2', 'sy_icmag', 
-    'sy_icmagerr1', 'sy_icmagerr2', 'sy_bmag', 'sy_bmagerr1', 'sy_bmagerr2', 'sy_vmag', 
-    'sy_vmagerr1', 'sy_vmagerr2', 'sy_umag', 'sy_umagerr1', 'sy_umagerr2', 'sy_rmag', 
-    'sy_rmagerr1', 'sy_rmagerr2', 'sy_imag', 'sy_imagerr1', 'sy_imagerr2', 'sy_zmag', 
-    'sy_zmagerr1', 'sy_zmagerr2', 'sy_jmag', 'sy_jmagerr1', 'sy_jmagerr2', 'sy_hmag', 
-    'sy_hmagerr1', 'sy_hmagerr2', 'sy_kmag', 'sy_kmagerr1', 'sy_kmagerr2', 'sy_w1mag', 
-    'sy_w1magerr1', 'sy_w1magerr2', 'sy_w2mag', 'sy_w2magerr1', 'sy_w2magerr2', 'sy_w3mag', 
-    'sy_w3magerr1', 'sy_w3magerr2', 'sy_w4mag', 'sy_w4magerr1', 'sy_w4magerr2', 'sy_pm', 
-    'sy_pmerr1', 'sy_pmerr2', 'sy_pmra', 'sy_pmraerr1', 'sy_pmraerr2', 'sy_pmdec', 
-    'sy_pmdecerr1', 'sy_pmdecerr2', 'sy_kepmag', 'sy_kepmagerr1', 'sy_kepmagerr2', 
-    'sy_pnum', 'kepoi_id'
-}
-
-def df_to_dict_list(df_subset: pd.DataFrame, include_actual: bool = False, include_probabilities: bool = False) -> list:
-    """Convert DataFrame to list of API response dictionaries using optimized vectorized operations."""
     
-    # Use pre-computed column lists for better performance
-    base_columns = _OPTIMIZED_COLUMNS['base']
-    transit_columns = _OPTIMIZED_COLUMNS['transit']
-    stellar_columns = _OPTIMIZED_COLUMNS['stellar']
-    derived_columns = _OPTIMIZED_COLUMNS['derived']
-    disposition_columns = _OPTIMIZED_COLUMNS['disposition']
-    photometry_columns = _OPTIMIZED_COLUMNS['photometry']
-    sky_columns = _OPTIMIZED_COLUMNS['sky']
+    # Explicitly exclude these columns (metadata and unwanted fields)
+    excluded_columns = [
+        # Vetting/delivery metadata
+        'koi_delivname', 'koi_vet_stat', 'koi_quarters',
+        # Diagnostic/TCE statistics
+        'koi_count', 'koi_max_sngle_ev', 'koi_max_mult_ev', 'koi_bin_oedp_sig',
+        # Limb darkening
+        'koi_limbdark_mod', 'koi_ldm_coeff1', 'koi_ldm_coeff2', 'koi_ldm_coeff3', 'koi_ldm_coeff4',
+        # Model fitting metadata
+        'koi_trans_mod', 'koi_model_dof', 'koi_model_chisq',
+        # Orbital parameters not listed
+        'koi_eccen', 'koi_eccen_err1', 'koi_eccen_err2',
+        'koi_longp', 'koi_longp_err1', 'koi_longp_err2',
+        # Alternate epoch fields
+        'koi_time0', 'koi_time0_err1', 'koi_time0_err2',
+        # Ingress duration
+        'koi_ingress', 'koi_ingress_err1', 'koi_ingress_err2',
+        # Inclination
+        'koi_incl', 'koi_incl_err1', 'koi_incl_err2',
+        # Provenance/commentary
+        'koi_sparprov', 'koi_comment', 'koi_vet_date', 'koi_tce_plnt_num',
+        'koi_tce_delivname', 'koi_disp_prov', 'koi_parm_prov',
+        # Extra identifiers
+        'host', 'hd_name', 'hip_name',
+        # Coordinate transforms
+        'glon', 'glat', 'elon', 'elat', 'ra_str', 'dec_str', 'rastr', 'decstr',
+        # Unwanted st_* stellar fields (keep only st_teff, st_rad, st_mass)
+        'st_met', 'st_meterr1', 'st_meterr2',
+        'st_logg', 'st_loggerr1', 'st_loggerr2',
+        'st_age', 'st_ageerr1', 'st_ageerr2',
+        'st_lum', 'st_lumerr1', 'st_lumerr2',
+        'st_dens', 'st_denserr1', 'st_denserr2',
+        'st_radv', 'st_radverr1', 'st_radverr2',
+        'st_vsin', 'st_vsinerr1', 'st_vsinerr2',
+        'st_rotp', 'st_rotperr1', 'st_rotperr2',
+        # Unwanted sy_* fields (keep only sy_gaiamag, sy_tmag, sy_dist, sy_plx)
+        'sy_icmag', 'sy_icmagerr1', 'sy_icmagerr2',
+        'sy_bmag', 'sy_bmagerr1', 'sy_bmagerr2',
+        'sy_vmag', 'sy_vmagerr1', 'sy_vmagerr2',
+        'sy_umag', 'sy_umagerr1', 'sy_umagerr2',
+        'sy_rmag', 'sy_rmagerr1', 'sy_rmagerr2',
+        'sy_imag', 'sy_imagerr1', 'sy_imagerr2',
+        'sy_zmag', 'sy_zmagerr1', 'sy_zmagerr2',
+        'sy_jmag', 'sy_jmagerr1', 'sy_jmagerr2',
+        'sy_hmag', 'sy_hmagerr1', 'sy_hmagerr2',
+        'sy_kmag', 'sy_kmagerr1', 'sy_kmagerr2',
+        'sy_w1mag', 'sy_w1magerr1', 'sy_w1magerr2',
+        'sy_w2mag', 'sy_w2magerr1', 'sy_w2magerr2',
+        'sy_w3mag', 'sy_w3magerr1', 'sy_w3magerr2',
+        'sy_w4mag', 'sy_w4magerr1', 'sy_w4magerr2',
+        # Proper motion/astrometric (not wanted)
+        'sy_pm', 'sy_pmerr1', 'sy_pmerr2',
+        'sy_pmra', 'sy_pmraerr1', 'sy_pmraerr2',
+        'sy_pmdec', 'sy_pmdecerr1', 'sy_pmdecerr2',
+        # Other sy_* fields not wanted
+        'sy_kepmag', 'sy_kepmagerr1', 'sy_kepmagerr2',
+        'sy_pnum',
+        # Additional unwanted fields
+        'kepoi_id',
+    ]
     
-    # Combine wanted columns efficiently
+    # Combine wanted columns
     all_columns = (base_columns + transit_columns + stellar_columns + 
                    derived_columns + disposition_columns + 
                    photometry_columns + sky_columns)
     
     # Build column list: include only wanted columns that exist and aren't excluded
-    # Use set operations for faster lookups
-    available_columns = set(df_subset.columns)
     columns_to_include = [
         col for col in all_columns 
-        if col in available_columns and col not in _EXCLUDED_COLUMNS
+        if col in df_subset.columns and col not in excluded_columns
     ]
     
-    # Add conditional columns efficiently
-    if include_actual:
-        for col in ['actual_disposition', 'actual_is_exoplanet']:
-            if col in available_columns and col not in columns_to_include:
-                columns_to_include.append(col)
+    if include_actual and 'actual_disposition' in df_subset.columns:
+        if 'actual_disposition' not in columns_to_include:
+            columns_to_include.append('actual_disposition')
+        if 'actual_is_exoplanet' in df_subset.columns and 'actual_is_exoplanet' not in columns_to_include:
+            columns_to_include.append('actual_is_exoplanet')
     
     if include_probabilities and model_loaded:
         prob_columns = [f"prob_{class_name}" for class_name in label_encoder.classes_]
-        columns_to_include.extend([col for col in prob_columns if col in available_columns])
+        columns_to_include.extend([col for col in prob_columns if col in df_subset.columns])
     
-    # Select only needed columns to reduce memory usage
-    result_df = df_subset[columns_to_include]
+    # Use pandas to_dict with 'records' orientation for fast conversion
+    result_df = df_subset[columns_to_include].copy()
     
-    # Rename prediction_confidence to confidence efficiently
+    # Rename prediction_confidence to confidence
     if 'prediction_confidence' in result_df.columns:
-        result_df = result_df.rename(columns={'prediction_confidence': 'confidence'})
+        result_df.rename(columns={'prediction_confidence': 'confidence'}, inplace=True)
     
-    # Convert to dict efficiently using vectorized operations
+    # Convert to dict efficiently
     records = result_df.to_dict('records')
     
-    # Post-process for probabilities structure (if needed) - only if requested
-    if include_probabilities and model_loaded and records:
+    # Post-process for probabilities structure (if needed)
+    if include_probabilities and model_loaded:
         prob_cols = [f"prob_{class_name}" for class_name in label_encoder.classes_]
         for record in records:
             probabilities = {}
@@ -786,58 +814,6 @@ def root():
         "rag_status_url": "/rag/status"
     }
 
-# Cache for frequently accessed data
-@lru_cache(maxsize=128)
-def _get_cached_planets_data(disposition: Optional[str], only_confirmed: Optional[bool], 
-                            include_actual: bool, include_probabilities: bool, 
-                            skip: int, limit: Optional[int]):
-    """Cached version of planets data retrieval."""
-    # Use MongoDB if available and populated
-    if mongodb_populated and mongo_collection is not None:
-        try:
-            # Build MongoDB query
-            query = {}
-            
-            # Filter by disposition
-            if disposition:
-                disp_upper = disposition.upper().replace("_", " ")  # FALSE_POSITIVE -> FALSE POSITIVE
-                query['disposition'] = disp_upper
-            
-            # Filter by confirmed only
-            if only_confirmed is True:
-                query['is_exoplanet'] = True
-            
-            # Build projection (fields to include/exclude)
-            projection = {'_id': 0}  # Exclude MongoDB _id
-            
-            # Conditionally exclude fields based on parameters
-            if not include_actual:
-                projection['actual_disposition'] = 0
-                projection['actual_is_exoplanet'] = 0
-            
-            if not include_probabilities:
-                # Exclude probability fields
-                projection['prob_CANDIDATE'] = 0
-                projection['prob_CONFIRMED'] = 0
-                projection['prob_FALSE POSITIVE'] = 0
-            
-            # Query MongoDB with pagination
-            cursor = mongo_collection.find(query, projection).skip(skip)
-            
-            if limit is not None:
-                cursor = cursor.limit(limit)
-            
-            # Convert cursor to list
-            results = list(cursor)
-            
-            return results, True  # (results, from_mongodb)
-            
-        except Exception as e:
-            print(f"❌ Error querying MongoDB: {e}")
-            return None, False  # Fall back to DataFrame
-    
-    return None, False  # Use DataFrame fallback
-
 @app.get("/planets", response_model=List[dict])
 def list_planets(
     skip: int = Query(0, ge=0, description="Rows to skip (pagination start)"),
@@ -878,19 +854,55 @@ def list_planets(
       - **3D/Sky Position**: sy_dist, sy_plx, x_pc, y_pc, z_pc, dist_ly (+ error columns)
     """
     
-    # Try cached MongoDB first
-    cached_results, from_mongodb = _get_cached_planets_data(
-        disposition, only_confirmed, include_actual, include_probabilities, skip, limit
-    )
-    
-    if from_mongodb and cached_results is not None:
-        print(f"📊 MongoDB query returned {len(cached_results)} results (cached)")
-        return cached_results
+    # Use MongoDB if available and populated
+    if mongodb_populated and mongo_collection is not None:
+        try:
+            # Build MongoDB query
+            query = {}
+            
+            # Filter by disposition
+            if disposition:
+                disp_upper = disposition.upper().replace("_", " ")  # FALSE_POSITIVE -> FALSE POSITIVE
+                query['disposition'] = disp_upper
+            
+            # Filter by confirmed only
+            if only_confirmed is True:
+                query['is_exoplanet'] = True
+            
+            # Build projection (fields to include/exclude)
+            # By default, include all fields except _id and conditionally exclude some
+            projection = {'_id': 0}  # Exclude MongoDB _id
+            
+            # Conditionally exclude fields based on parameters
+            if not include_actual:
+                projection['actual_disposition'] = 0
+                projection['actual_is_exoplanet'] = 0
+            
+            if not include_probabilities:
+                # Exclude probability fields
+                projection['prob_CANDIDATE'] = 0
+                projection['prob_CONFIRMED'] = 0
+                projection['prob_FALSE POSITIVE'] = 0
+            
+            # Query MongoDB with pagination
+            cursor = mongo_collection.find(query, projection).skip(skip)
+            
+            if limit is not None:
+                cursor = cursor.limit(limit)
+            
+            # Convert cursor to list
+            results = list(cursor)
+            
+            print(f"📊 MongoDB query returned {len(results)} results")
+            return results
+            
+        except Exception as e:
+            print(f"❌ Error querying MongoDB: {e}")
+            print(f"   Falling back to DataFrame...")
+            # Fall through to DataFrame fallback
     
     # Fallback to DataFrame operations
-    print("📊 Using DataFrame (MongoDB not available or cache miss)")
-    start_time = time.time()
-    
+    print("📊 Using DataFrame (MongoDB not available)")
     subset = df.copy()
     
     # Filter by predicted disposition
@@ -912,10 +924,6 @@ def list_planets(
     
     # Use optimized vectorized conversion
     results = df_to_dict_list(rows, include_actual=include_actual, include_probabilities=include_probabilities)
-    
-    elapsed_time = time.time() - start_time
-    print(f"⚡ DataFrame processing took {elapsed_time:.3f} seconds for {len(results)} results")
-    
     return results
 
 
@@ -2204,35 +2212,5 @@ def get_statistics():
                 correct = ((df["disposition"] == df["actual_disposition"]) & actual_class).sum()
                 per_class_accuracy[class_name] = round(correct / actual_class.sum() * 100, 2)
         stats["per_class_accuracy"] = per_class_accuracy
-    
-    return stats
-
-@app.get("/performance", response_model=dict)
-def get_performance_stats():
-    """
-    Get performance statistics and optimization recommendations.
-    """
-    stats = {
-        "mongodb_available": mongodb_populated,
-        "model_loaded": model_loaded,
-        "dataframe_size": len(df),
-        "optimizations": {
-            "caching_enabled": True,
-            "vectorized_operations": True,
-            "precomputed_columns": True,
-            "mongodb_indexing": mongodb_populated,
-        },
-        "recommendations": []
-    }
-    
-    # Add recommendations based on current state
-    if not mongodb_populated:
-        stats["recommendations"].append("Enable MongoDB for 10-50x faster queries")
-    
-    if not model_loaded:
-        stats["recommendations"].append("Train model for prediction capabilities")
-    
-    if len(df) > 100000:
-        stats["recommendations"].append("Consider pagination for large datasets")
     
     return stats
