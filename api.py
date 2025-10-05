@@ -1404,7 +1404,11 @@ async def train_custom_model(
         
         # Cross-validation
         print("\n📊 Cross-validation...")
-        cv_results = predictor.cross_validate_model(X, y)
+        # Use the preprocessed data for cross-validation
+        import numpy as np
+        X_combined = np.vstack([X_train_scaled, X_val_scaled, X_test_scaled])
+        y_combined = np.concatenate([y_train, y_val, y_test])
+        cv_results = predictor.cross_validate_model(X_combined, y_combined)
         
         # Evaluate on test set
         print("\n📈 Evaluating on test set...")
