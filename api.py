@@ -1318,9 +1318,6 @@ async def train_custom_model(
         # Initialize predictor
         predictor = KOIDispositionPredictor(config)
         
-        # Override model parameters with custom hyperparameters
-        predictor.model_params.update(config['xgb_params'])
-        
         # Run preprocessing - pass the dataframe directly
         print("\n📋 Preprocessing data...")
         X, y = predictor.preprocess_data(training_df)
